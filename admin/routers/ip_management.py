@@ -1,6 +1,11 @@
 """Admin IP block list and client activity statistics."""
 from __future__ import annotations
 
+import copy
+import json
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
@@ -20,6 +25,91 @@ from admin.security import require_admin
 
 router = APIRouter(prefix="/api/ip", tags=["ip-management"])
 _OK_KINDS = ("", "success")
+
+#: The activity view is an expensive UNION over usage history that admins page
+#: through repeatedly. Two cores cannot absorb a re-run per click, so results
+#: are reused briefly and identical concurrent reads share one execution.
+_ACTIVITY_CACHE_TTL = 15.0
+_ACTIVITY_CACHE_MAX = 32
+_activity_cache: "OrderedDict" = OrderedDict()
+_activity_cache_lock = threading.Lock()
+_activity_inflight: dict = {}
+_activity_inflight_lock = threading.Lock()
+
+
+def _activity_cache_key(*values):
+    return json.dumps(values, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _activity_cache_get(key):
+    now = time.monotonic()
+    with _activity_cache_lock:
+        entry = _activity_cache.get(key)
+        if entry is None:
+            return None
+        expires, value = entry
+        if expires <= now:
+            _activity_cache.pop(key, None)
+            return None
+        _activity_cache.move_to_end(key)
+        return copy.deepcopy(value)
+
+
+def _activity_cache_put(key, value):
+    with _activity_cache_lock:
+        _activity_cache[key] = (time.monotonic() + _ACTIVITY_CACHE_TTL, copy.deepcopy(value))
+        _activity_cache.move_to_end(key)
+        while len(_activity_cache) > _ACTIVITY_CACHE_MAX:
+            _activity_cache.popitem(last=False)
+
+
+def _activity_counts(db: Session, start: datetime):
+    """Per-IP totals as one derived table, so page rows and totals share it."""
+    first = (db.query(IPRequestBucket.ip.label("ip"),
+                      func.min(IPRequestBucket.first_seen).label("first_seen"))
+             .group_by(IPRequestBucket.ip).subquery())
+    historical = (select(UsageLog.client_ip.label("ip"),
+                         func.count(UsageLog.id).label("requests"),
+                         func.sum(case((func.coalesce(UsageLog.error_kind, "").in_(_OK_KINDS), 0),
+                                       else_=1)).label("failed"),
+                         (func.count(UsageLog.id) * 0).label("blocked_requests"),
+                         func.max(UsageLog.created_at).label("last_seen"))
+                  .outerjoin(first, UsageLog.client_ip == first.c.ip)
+                  .where(UsageLog.created_at >= start, UsageLog.client_ip.isnot(None),
+                         UsageLog.client_ip.notin_(["", "unknown"]),
+                         or_(first.c.first_seen.is_(None), UsageLog.created_at < first.c.first_seen))
+                  .group_by(UsageLog.client_ip))
+    ingress = (select(IPRequestBucket.ip.label("ip"),
+                      func.sum(IPRequestBucket.requests).label("requests"),
+                      func.sum(IPRequestBucket.failed).label("failed"),
+                      func.sum(IPRequestBucket.blocked).label("blocked_requests"),
+                      func.max(IPRequestBucket.last_seen).label("last_seen"))
+               .where(IPRequestBucket.hour >= start).group_by(IPRequestBucket.ip))
+    combined = union_all(historical, ingress).subquery()
+    totals = (select(combined.c.ip, func.sum(combined.c.requests).label("requests"),
+                     func.sum(combined.c.failed).label("failed"),
+                     func.sum(combined.c.blocked_requests).label("blocked_requests"),
+                     func.max(combined.c.last_seen).label("last_seen"))
+              .group_by(combined.c.ip).subquery())
+    usage = (db.query(UsageLog.client_ip.label("ip"),
+                      func.sum(UsageLog.credits).label("credits"),
+                      func.avg(UsageLog.credits).label("avg_credits"),
+                      func.avg(UsageLog.total_tokens).label("avg_tokens"),
+                      func.count(UsageLog.total_tokens).label("known_usage"),
+                      func.sum(UsageLog.total_tokens).label("tokens"))
+             .filter(UsageLog.created_at >= start,
+                     func.coalesce(UsageLog.error_kind, "").in_(_OK_KINDS))
+             .group_by(UsageLog.client_ip).subquery())
+    # Flatten counts+usage once; the router only reads these columns afterwards.
+    return (select(totals.c.ip, totals.c.requests, totals.c.failed,
+                   totals.c.blocked_requests, totals.c.last_seen,
+                   func.coalesce(usage.c.credits, 0).label("credits"),
+                   usage.c.avg_credits.label("avg_credits"),
+                   usage.c.avg_tokens.label("avg_tokens"),
+                   usage.c.known_usage.label("known_usage"),
+                   func.coalesce(usage.c.tokens, 0).label("tokens"))
+            .outerjoin(usage, totals.c.ip == usage.c.ip)
+            .subquery())
 
 
 def identity_items(db, ips=None, key_id=None, start=None):
@@ -207,60 +297,39 @@ def ip_activity(
     """Ingress counts, with usage history before ingress tracking began."""
     flush()
     start = (datetime.utcnow() - timedelta(days=days)).replace(minute=0, second=0, microsecond=0)
-    first = (db.query(IPRequestBucket.ip.label("ip"),
-                      func.min(IPRequestBucket.first_seen).label("first_seen"))
-             .group_by(IPRequestBucket.ip).subquery())
-    historical = (select(UsageLog.client_ip.label("ip"),
-                         func.count(UsageLog.id).label("requests"),
-                         func.sum(case((UsageLog.error_kind.in_(_OK_KINDS), 0), else_=1)).label("failed"),
-                         (func.count(UsageLog.id) * 0).label("blocked_requests"),
-                         func.max(UsageLog.created_at).label("last_seen"))
-                  .outerjoin(first, UsageLog.client_ip == first.c.ip)
-                  .where(UsageLog.created_at >= start, UsageLog.client_ip.isnot(None),
-                         UsageLog.client_ip.notin_(["", "unknown"]),
-                         or_(first.c.first_seen.is_(None), UsageLog.created_at < first.c.first_seen))
-                  .group_by(UsageLog.client_ip))
-    ingress = (select(IPRequestBucket.ip.label("ip"),
-                      func.sum(IPRequestBucket.requests).label("requests"),
-                      func.sum(IPRequestBucket.failed).label("failed"),
-                      func.sum(IPRequestBucket.blocked).label("blocked_requests"),
-                      func.max(IPRequestBucket.last_seen).label("last_seen"))
-               .where(IPRequestBucket.hour >= start).group_by(IPRequestBucket.ip))
-    combined = union_all(historical, ingress).subquery()
-    counts = (select(combined.c.ip, func.sum(combined.c.requests).label("requests"),
-                     func.sum(combined.c.failed).label("failed"),
-                     func.sum(combined.c.blocked_requests).label("blocked_requests"),
-                     func.max(combined.c.last_seen).label("last_seen"))
-              .group_by(combined.c.ip).subquery())
-    usage = (db.query(UsageLog.client_ip.label("ip"),
-                      func.sum(UsageLog.credits).label("credits"),
-                      func.avg(UsageLog.credits).label("avg_credits"),
-                      func.avg(UsageLog.total_tokens).label("avg_tokens"),
-                      func.count(UsageLog.total_tokens).label("known_usage"),
-                      func.sum(UsageLog.total_tokens).label("tokens"))
-             .filter(UsageLog.created_at >= start, UsageLog.error_kind.in_(_OK_KINDS))
-             .group_by(UsageLog.client_ip).subquery())
-    credits = func.coalesce(usage.c.credits, 0)
-    tokens = func.coalesce(usage.c.tokens, 0)
+    cache_key = _activity_cache_key(days, sort, direction, limit, offset, min_requests,
+                                    max_avg_tokens, max_avg_credits, ip)
+    cached = _activity_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    # The same UNION is needed twice (page rows + totals). Aggregate once into a
+    # derived table and reuse it: this is the single most expensive query on the
+    # log/IP panel and the box only has two cores.
+    counts = _activity_counts(db, start)
+    credits = func.coalesce(counts.c.credits, 0)
+    tokens = func.coalesce(counts.c.tokens, 0)
     sorts = {"requests": counts.c.requests, "failed": counts.c.failed,
              "blocked_requests": counts.c.blocked_requests, "credits": credits,
              "tokens": tokens, "last_seen": counts.c.last_seen, "ip": counts.c.ip}
     order = sorts[sort].asc() if direction == "asc" else sorts[sort].desc()
-    query = (db.query(counts, credits.label("credits"), tokens.label("tokens"),
-                     usage.c.avg_credits, usage.c.avg_tokens, usage.c.known_usage)
-             .outerjoin(usage, counts.c.ip == usage.c.ip)
-             .filter(counts.c.requests >= min_requests))
+    conditions = [counts.c.requests >= min_requests]
     if max_avg_tokens is not None:
-        query = query.filter(usage.c.avg_tokens <= max_avg_tokens)
+        conditions.append(counts.c.avg_tokens <= max_avg_tokens)
     if max_avg_credits is not None:
-        query = query.filter(usage.c.known_usage > 0, usage.c.avg_credits <= max_avg_credits)
+        conditions.extend([counts.c.known_usage > 0, counts.c.avg_credits <= max_avg_credits])
     if ip:
         try:
             normalized = normalize_ip(ip)
         except ValueError:
             normalized = None
-        query = query.filter(counts.c.ip == normalized) if normalized else query.filter(counts.c.ip.contains(ip, autoescape=True))
-    rows = query.order_by(order, counts.c.ip.asc()).offset(offset).limit(limit).all()
+        conditions.append(counts.c.ip == normalized if normalized
+                          else counts.c.ip.contains(ip, autoescape=True))
+    page = db.query(counts).filter(*conditions) \
+        .order_by(order, counts.c.ip.asc()).offset(offset).limit(limit)
+    rows = page.all()
+    # Totals must reflect every active filter and ignore the page window.
+    totals = db.query(func.count(), func.coalesce(func.sum(counts.c.requests), 0)) \
+        .select_from(counts).filter(*conditions).one()
     blocked_rows = db.query(BlockedIP).filter(BlockedIP.enabled == 1).all()
     blocked_by_ip = {row.ip: row for row in blocked_rows}
     client_details = _client_details(db, [row.ip for row in rows], start)
@@ -278,8 +347,7 @@ def ip_activity(
             "blocked": ban is not None, "blocked_id": ban.id if ban else None,
             "client_details": client_details[row.ip],
         })
-    totals = query.with_entities(func.count(), func.coalesce(func.sum(counts.c.requests), 0)).one()
-    return {
+    payload = {
         "days": days,
         "sort": sort, "direction": direction,
         "items": items,
@@ -287,4 +355,6 @@ def ip_activity(
         "current_ip": request_ip(request), "offset": offset, "limit": limit,
         "blocked_count": len(blocked_by_ip),
     }
+    _activity_cache_put(cache_key, payload)
+    return payload
 

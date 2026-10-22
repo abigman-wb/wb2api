@@ -60,6 +60,12 @@ _stats_cache_lock = threading.Lock()
 _stats_cache = OrderedDict()
 _STATS_CACHE_TTL = 5.0
 _STATS_CACHE_MAX = 64
+#: 单条最重的 IP 聚合查询，重复访问给更长的复用窗口。
+_STATS_CACHE_TTL_HEAVY = 20.0
+#: 同一个 key 正在重算时，后来者等它的结果而不是各自再打一遍库。
+#: 2 核机器上并发重算同一条聚合查询会把单次 200ms 拖到 1s 以上。
+_stats_inflight = {}
+_stats_inflight_lock = threading.Lock()
 
 
 def _stats_cache_key(kind, values):
@@ -80,12 +86,46 @@ def _stats_cache_get(key):
         return copy.deepcopy(value)
 
 
-def _stats_cache_put(key, value):
+def _stats_cache_put(key, value, ttl=None):
     with _stats_cache_lock:
-        _stats_cache[key] = (time.monotonic() + _STATS_CACHE_TTL, copy.deepcopy(value))
+        _stats_cache[key] = (time.monotonic() + (_STATS_CACHE_TTL if ttl is None else ttl),
+                             copy.deepcopy(value))
         _stats_cache.move_to_end(key)
         while len(_stats_cache) > _STATS_CACHE_MAX:
             _stats_cache.popitem(last=False)
+
+
+def _cached_stats(key, compute, ttl=None):
+    """Single-flight cached aggregation: concurrent identical reads share one run.
+
+    ``compute`` must be pure SQL work — it may run on the caller's session, so
+    a leader that fails just lets the next caller retry.
+    """
+    cached = _stats_cache_get(key)
+    if cached is not None:
+        return cached
+    with _stats_inflight_lock:
+        pending = _stats_inflight.get(key)
+        leader = pending is None
+        if leader:
+            pending = _stats_inflight[key] = threading.Event()
+    if not leader:
+        # Bounded: the leader's own query is already time-limited by the request
+        # deadline, and a broken leader always releases this event.
+        pending.wait(timeout=30.0)
+        cached = _stats_cache_get(key)
+        if cached is not None:
+            return cached
+        # Leader failed or timed out; fall through and compute independently.
+    try:
+        value = compute()
+    finally:
+        if leader:
+            with _stats_inflight_lock:
+                _stats_inflight.pop(key, None)
+            pending.set()
+    _stats_cache_put(key, value, ttl)
+    return value
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
 
@@ -159,6 +199,41 @@ def request_activity(key: Optional[str] = None, limit: int = 40, include_history
     return _activity_probe(db, key, limit, include_history)
 
 
+_activity_sample_cache = {}
+_activity_sample_lock = threading.Lock()
+
+
+def _activity_sample(key: Optional[str], limit: int) -> dict:
+    """Let one execution serve several callers that ask at the same instant.
+
+    Deliberately does NOT keep a time-based cache: the stream must still sample
+    on its own schedule, otherwise "no database queries while idle" would turn
+    into stale frames. This only collapses the momentary double-run when several
+    tabs sample together on a two-core box.
+    """
+    flight_key = (key or '', int(limit))
+    with _activity_sample_lock:
+        entry = _activity_sample_cache.get(flight_key)
+        leader = entry is None
+        if leader:
+            entry = _activity_sample_cache[flight_key] = {'event': threading.Event()}
+    if not leader:
+        entry['event'].wait(timeout=_ACTIVITY_STREAM_SAMPLE_TTL)
+        shared = entry.get('payload')
+        if shared is not None:
+            return copy.deepcopy(shared)
+    payload = None
+    try:
+        payload = _activity_fetch(key, limit)
+        return payload
+    finally:
+        if leader:
+            entry['payload'] = payload
+            with _activity_sample_lock:
+                _activity_sample_cache.pop(flight_key, None)
+            entry['event'].set()
+
+
 # ---------------------------------------------------------------------------
 # 「请求动态」推送通道（SSE）—— 替代原来的「每 3 秒轮询」
 # ---------------------------------------------------------------------------
@@ -175,7 +250,13 @@ def request_activity(key: Optional[str] = None, limit: int = 40, include_history
 # abort，服务端立刻停采样。
 _ACTIVITY_STREAM_HEARTBEAT = 15.0       # 秒：无变化时的心跳间隔
 _ACTIVITY_STREAM_TICK = 0.5             # 秒：内存指纹比较间隔（无 SQL）
-_ACTIVITY_STREAM_REFRESH = 10.0         # 秒：即使内存没变，也重新对一次库
+#: 内存指纹没变时的兜底对库间隔。这里做两件事：读一条 request_audits 的
+#: 尾巴、以及 usage_logs 的主键最大值。原来 10 秒一次，在 2 核机器上和
+#: 面板其它查询抢 CPU；30 秒足够发现“有别处写入”，而真正的变化走内存指纹
+#: 立刻推送，不依赖这个兜底。
+_ACTIVITY_STREAM_REFRESH = 30.0
+#: 多开标签页时每个连接都会查库。同一条推送查询在这么多秒内复用结果。
+_ACTIVITY_STREAM_SAMPLE_TTL = 5.0
 _ACTIVITY_STREAM_MAX_SECONDS = 30 * 60  # 单连接上限，到点让前端换票重连
 _STREAM_TICKET_TTL = 120.0              # 推送票据有效期（秒）
 _STREAM_TICKET_LIMIT = 256              # 票据总量上限（纯内存结构，必须有界）
@@ -323,7 +404,7 @@ async def request_activity_stream(
                         last_mem = live
                         last_db = now
                         try:
-                            payload = await run_in_threadpool(_activity_fetch, key, limit)
+                            payload = await run_in_threadpool(_activity_sample, key, limit)
                         except Exception:
                             # 数据库短暂不可用不该让面板永远空白：发一帧空结果。
                             payload = {'active': [], 'active_count': 0, 'recent': [],
@@ -733,49 +814,47 @@ def log_summary(
 ):
     cache_key = _stats_cache_key('summary', (
         days, account_id, key_id, model, key, account, client_ip, start, end, result))
-    cached = _stats_cache_get(cache_key)
-    if cached is not None:
-        return cached
-    success = func.coalesce(UsageLog.error_kind, "").in_(("", "success"))
-    q = db.query(
-        UsageLog.account_id, func.count(UsageLog.id),
-        func.coalesce(func.sum(UsageLog.credits), 0.0),
-        func.coalesce(func.sum(UsageLog.total_tokens), 0),
-        func.coalesce(func.sum(UsageLog.prompt_tokens), 0),
-        func.coalesce(func.sum(UsageLog.completion_tokens), 0),
-        func.coalesce(func.sum(UsageLog.cached_tokens), 0),
-        func.avg(UsageLog.latency_ms), func.max(UsageLog.created_at),
-        func.coalesce(func.sum(case((success, 0), else_=1)), 0),
-    )
-    if not start and days > 0:
-        start = datetime.utcnow() - timedelta(days=days)
-    q, short = _build_filters(q, key_id=key_id,
-        account_ids=[account_id] if account_id is not None else None,
-        models=None, model=model, key=key, account=account,
-        client_ip=client_ip, start=start, end=end, db=db, result=result)
-    rows = [] if short else q.group_by(UsageLog.account_id).order_by(
-        func.coalesce(func.sum(UsageLog.credits), 0.0).desc()).all()
-    _, names = _name_maps(db, set(), {r[0] for r in rows if r[0]})
-    items = []
-    for aid, reqs, credits, ttok, ptok, ctok, cached, avg_lat, last, fails in rows:
-        items.append({
-            "account_id": aid,
-            "account_name": names.get(aid) or (f"#{aid}" if aid else "未记录账号 / 未选号"),
-            "requests": int(reqs), "failed_requests": int(fails),
-            "ok_requests": int(reqs - fails), "credits": round(float(credits), 4),
-            "total_tokens": int(ttok), "prompt_tokens": int(ptok),
-            "completion_tokens": int(ctok), "cached_tokens": int(cached),
-            "avg_latency_ms": int(avg_lat or 0),
-            "last_used_at": last.isoformat() if last else None,
-        })
-    result_data = {"range_days": days, "total_requests": sum(i["requests"] for i in items),
-                   "ok_requests": sum(i["ok_requests"] for i in items),
-                   "failed_requests": sum(i["failed_requests"] for i in items),
-                   "account_count": sum(1 for i in items if i["account_id"]),
-                   "unattributed_requests": sum(i["requests"] for i in items if not i["account_id"]),
-                   "total_credits": round(sum(i["credits"] for i in items), 4), "items": items}
-    _stats_cache_put(cache_key, result_data)
-    return result_data
+
+    def compute():
+        success = func.coalesce(UsageLog.error_kind, "").in_(("", "success"))
+        q = db.query(
+            UsageLog.account_id, func.count(UsageLog.id),
+            func.coalesce(func.sum(UsageLog.credits), 0.0),
+            func.coalesce(func.sum(UsageLog.total_tokens), 0),
+            func.coalesce(func.sum(UsageLog.prompt_tokens), 0),
+            func.coalesce(func.sum(UsageLog.completion_tokens), 0),
+            func.coalesce(func.sum(UsageLog.cached_tokens), 0),
+            func.avg(UsageLog.latency_ms), func.max(UsageLog.created_at),
+            func.coalesce(func.sum(case((success, 0), else_=1)), 0),
+        )
+        window_start = start or (datetime.utcnow() - timedelta(days=days) if days > 0 else None)
+        q, short = _build_filters(q, key_id=key_id,
+            account_ids=[account_id] if account_id is not None else None,
+            models=None, model=model, key=key, account=account,
+            client_ip=client_ip, start=window_start, end=end, db=db, result=result)
+        rows = [] if short else q.group_by(UsageLog.account_id).order_by(
+            func.coalesce(func.sum(UsageLog.credits), 0.0).desc()).all()
+        _, names = _name_maps(db, set(), {r[0] for r in rows if r[0]})
+        items = []
+        for aid, reqs, credits, ttok, ptok, ctok, cached_tokens, avg_lat, last, fails in rows:
+            items.append({
+                "account_id": aid,
+                "account_name": names.get(aid) or (f"#{aid}" if aid else "未记录账号 / 未选号"),
+                "requests": int(reqs), "failed_requests": int(fails),
+                "ok_requests": int(reqs - fails), "credits": round(float(credits), 4),
+                "total_tokens": int(ttok), "prompt_tokens": int(ptok),
+                "completion_tokens": int(ctok), "cached_tokens": int(cached_tokens),
+                "avg_latency_ms": int(avg_lat or 0),
+                "last_used_at": last.isoformat() if last else None,
+            })
+        return {"range_days": days, "total_requests": sum(i["requests"] for i in items),
+                "ok_requests": sum(i["ok_requests"] for i in items),
+                "failed_requests": sum(i["failed_requests"] for i in items),
+                "account_count": sum(1 for i in items if i["account_id"]),
+                "unattributed_requests": sum(i["requests"] for i in items if not i["account_id"]),
+                "total_credits": round(sum(i["credits"] for i in items), 4), "items": items}
+
+    return _cached_stats(cache_key, compute)
 
 
 @router.get("/ip-summary")
@@ -794,40 +873,47 @@ def log_ip_summary(
     limit = max(1, min(100, limit))
     if not start and days > 0:
         start = datetime.utcnow() - timedelta(days=min(days, 3650))
-    requests = func.count(UsageLog.id).label('requests')
-    known = func.count(UsageLog.total_tokens).label('known')
-    credits = func.coalesce(func.sum(UsageLog.credits), 0).label('credits')
-    tokens = func.sum(UsageLog.total_tokens).label('tokens')
-    average = func.avg(UsageLog.total_tokens).label('avg_tokens')
-    low = func.sum(case((UsageLog.total_tokens <= low_tokens, 1), else_=0)).label('low')
-    zero = func.sum(case((UsageLog.total_tokens == 0, 1), else_=0)).label('zero')
-    failed = func.sum(case((func.coalesce(UsageLog.error_kind, '').in_(('', 'success')), 0), else_=1))
-    q = db.query(UsageLog.client_ip, requests, known, credits, tokens, average, low, zero,
-                 failed.label('failed'), func.max(UsageLog.created_at).label('last'))
-    q, short = _build_filters(q, key_id=key_id,
-        account_ids=[account_id] if account_id is not None else None,
-        models=None, model=model, key=key, account=account if account_id is None else None,
-        client_ip=client_ip, start=start, end=end, db=db, result=result)
-    orders = {'requests': requests.desc(), 'low_tokens': low.desc(),
-              'avg_tokens': average.asc(), 'credits': credits.asc()}
-    if sort not in orders:
-        raise HTTPException(400, "IP 排序方式无效")
-    order = [orders[sort], requests.desc(), UsageLog.client_ip.asc()]
-    if sort == 'avg_tokens':
-        order.insert(0, case((known == 0, 1), else_=0))
-    rows = [] if short else q.group_by(UsageLog.client_ip).having(requests >= min_requests).order_by(
-        *order).limit(limit + 1).all()
-    items = []
-    for r in rows[:limit]:
-        items.append({'client_ip': r.client_ip or '', 'requests': int(r.requests),
-            'known_usage_requests': int(r.known), 'missing_usage_requests': int(r.requests-r.known),
-            'total_tokens': int(r.tokens) if r.tokens is not None else None,
-            'avg_tokens': round(float(r.avg_tokens), 1) if r.avg_tokens is not None else None,
-            'low_token_requests': int(r.low), 'zero_token_requests': int(r.zero),
-            'credits': round(float(r.credits), 4), 'avg_credits': round(float(r.credits)/r.requests, 6),
-            'failed_requests': int(r.failed), 'last_used_at': r.last.isoformat() if r.last else None})
-    return {'items': items, 'has_more': len(rows) > limit, 'low_tokens': low_tokens,
-            'min_requests': min_requests, 'limit': limit, 'sort': sort}
+    cache_key = _stats_cache_key('ip_summary', (
+        key_id, account_id, model, key, account, client_ip, start, end, result,
+        low_tokens, min_requests, sort, limit))
+
+    def compute():
+        requests = func.count(UsageLog.id).label('requests')
+        known = func.count(UsageLog.total_tokens).label('known')
+        credits = func.coalesce(func.sum(UsageLog.credits), 0).label('credits')
+        tokens = func.sum(UsageLog.total_tokens).label('tokens')
+        average = func.avg(UsageLog.total_tokens).label('avg_tokens')
+        low = func.sum(case((UsageLog.total_tokens <= low_tokens, 1), else_=0)).label('low')
+        zero = func.sum(case((UsageLog.total_tokens == 0, 1), else_=0)).label('zero')
+        failed = func.sum(case((func.coalesce(UsageLog.error_kind, '').in_(('', 'success')), 0), else_=1))
+        q = db.query(UsageLog.client_ip, requests, known, credits, tokens, average, low, zero,
+                     failed.label('failed'), func.max(UsageLog.created_at).label('last'))
+        q, short = _build_filters(q, key_id=key_id,
+            account_ids=[account_id] if account_id is not None else None,
+            models=None, model=model, key=key, account=account if account_id is None else None,
+            client_ip=client_ip, start=start, end=end, db=db, result=result)
+        orders = {'requests': requests.desc(), 'low_tokens': low.desc(),
+                  'avg_tokens': average.asc(), 'credits': credits.asc()}
+        if sort not in orders:
+            raise HTTPException(400, "IP 排序方式无效")
+        order = [orders[sort], requests.desc(), UsageLog.client_ip.asc()]
+        if sort == 'avg_tokens':
+            order.insert(0, case((known == 0, 1), else_=0))
+        rows = [] if short else q.group_by(UsageLog.client_ip).having(requests >= min_requests).order_by(
+            *order).limit(limit + 1).all()
+        items = []
+        for r in rows[:limit]:
+            items.append({'client_ip': r.client_ip or '', 'requests': int(r.requests),
+                'known_usage_requests': int(r.known), 'missing_usage_requests': int(r.requests-r.known),
+                'total_tokens': int(r.tokens) if r.tokens is not None else None,
+                'avg_tokens': round(float(r.avg_tokens), 1) if r.avg_tokens is not None else None,
+                'low_token_requests': int(r.low), 'zero_token_requests': int(r.zero),
+                'credits': round(float(r.credits), 4), 'avg_credits': round(float(r.credits)/r.requests, 6),
+                'failed_requests': int(r.failed), 'last_used_at': r.last.isoformat() if r.last else None})
+        return {'items': items, 'has_more': len(rows) > limit, 'low_tokens': low_tokens,
+                'min_requests': min_requests, 'limit': limit, 'sort': sort}
+
+    return _cached_stats(cache_key, compute, ttl=_STATS_CACHE_TTL_HEAVY)
 
 
 @router.get("/capture/settings")
