@@ -1,0 +1,94 @@
+# Ruff 基线配置（P0-5）
+#
+# 存量代码在启用规则集 E,F,W,I,B（line-length=120）时会一次性暴露 542 条告警，
+# 分布在 72 个文件，归并为 162 个「文件 × 规则」组合。整改这些存量问题是独立的「清理/格式化」PR，
+# 不应与 CI 建设混在一起，因此这里把**当前已存在的**逐文件逐规则冻结。
+#
+# 规则：冻结清单只减不增。
+#   - 新文件不在下表 => 必须零告警
+#   - 每修完一个文件的存量问题，就从下表删掉对应条目
+#   - 不得为了让新代码变绿而把新文件加进下表
+#
+# 格式检查（ruff format --check）暂未纳入阻断：91 个存量文件尚未统一格式，
+# 见本目录 README 的已知风险一节。
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"admin/backend.py" = ["E501", "F401", "I001"]
+"admin/billing.py" = ["E501", "I001"]
+"admin/client_identity.py" = ["I001"]
+"admin/client_profile.py" = ["F401"]
+"admin/compensation.py" = ["E501", "I001"]
+"admin/config.py" = ["I001"]
+"admin/credential_codec.py" = ["E501", "I001"]
+"admin/credit_journal.py" = ["E501"]
+"admin/gateway_limits.py" = ["E501", "I001"]
+"admin/growth_center.py" = ["E501"]
+"admin/growth_plan.py" = ["B023", "I001"]
+"admin/growth_plans.py" = ["F601", "I001"]
+"admin/health.py" = ["I001"]
+"admin/ip_access.py" = ["E501", "I001"]
+"admin/ip_activity.py" = ["I001"]
+"admin/jobrunner.py" = ["F401"]
+"admin/maintenance.py" = ["I001"]
+"admin/mobile_stream.py" = ["E501"]
+"admin/model_busy.py" = ["E501", "I001"]
+"admin/model_catalog.py" = ["I001"]
+"admin/model_limits.py" = ["E501"]
+"admin/model_listing.py" = ["I001"]
+"admin/models.py" = ["E501"]
+"admin/request_audit.py" = ["I001"]
+"admin/request_metrics.py" = ["E501", "I001"]
+"admin/routers/accounts.py" = ["B008", "B904", "E501", "F821", "I001"]
+"admin/routers/app_source.py" = ["B008", "B904", "I001"]
+"admin/routers/audio.py" = ["B008", "B023", "E501", "I001"]
+"admin/routers/benefits.py" = ["B008"]
+"admin/routers/client_profile.py" = ["B008", "I001"]
+"admin/routers/credits.py" = ["B008", "E501", "I001"]
+"admin/routers/groups.py" = ["B008", "F401"]
+"admin/routers/growth.py" = ["B008", "B023", "B904", "E501", "F401"]
+"admin/routers/growth_center.py" = ["B008", "B904", "E501", "F401", "I001"]
+"admin/routers/ip_management.py" = ["B008", "I001"]
+"admin/routers/keys.py" = ["B008", "E501"]
+"admin/routers/login.py" = ["B008", "B904", "E501", "I001"]
+"admin/routers/logs.py" = ["B008", "E501", "I001"]
+"admin/routers/maintenance.py" = ["B008", "E501", "I001"]
+"admin/routers/models.py" = ["B008", "B904", "F401", "I001"]
+"admin/routers/proxy.py" = ["B008", "B023", "E402", "E501", "E731", "F401", "F811", "F821", "I001"]
+"admin/routers/releases.py" = ["E501", "I001"]
+"admin/routers/schedules.py" = ["B008", "E501", "I001"]
+"admin/routers/stats.py" = ["B008", "B905", "I001"]
+"admin/routers/sync.py" = ["B008", "B904", "E501"]
+"admin/routing_policy.py" = ["E501"]
+"admin/scheduler.py" = ["B023", "E501", "I001"]
+"admin/security.py" = ["B904", "E501", "F401", "I001"]
+"admin/server.py" = ["E402", "E501", "F401", "I001"]
+"admin/upstream_dispatch.py" = ["I001"]
+"admin/upstream_errors.py" = ["I001"]
+"admin/upstream_http.py" = ["B018", "B904", "I001"]
+"admin/wb_login.py" = ["B904", "E501"]
+"android/python/android_runtime.py" = ["E501", "I001"]
+"android/python/mobile_http.py" = ["I001"]
+"anthropic_adapter.py" = ["E501"]
+"build.py" = ["B904", "E501", "I001"]
+"converter.py" = ["B904", "E401", "E402", "E501", "F401", "F541", "I001"]
+"desensitize.py" = ["E501", "F541"]
+"desktop/app.py" = ["E501", "F401", "I001"]
+"desktop/tray.py" = ["F401"]
+"desktop/updates.py" = ["I001"]
+"desktop_entry.py" = ["I001"]
+"main.py" = ["E501", "F541"]
+"model_metadata.py" = ["I001"]
+"responses_projection.py" = ["E501", "F841", "I001"]
+"scripts/asar_grep.py" = ["F401"]
+"scripts/build_android.py" = ["E501"]
+"scripts/build_desktop.py" = ["I001"]
+"scripts/check_maintenance.py" = ["E402", "E501", "E701", "E702", "F401", "I001"]
+"scripts/check_runtime.py" = ["I001"]
+"scripts/export_credential_key.py" = ["I001"]
