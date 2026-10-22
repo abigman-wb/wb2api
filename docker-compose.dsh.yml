@@ -2,7 +2,7 @@
 services:
   workbuddy2api:
     build: .
-    image: wb2api:local
+    pull_policy: build          # 每次 up 都重建镜像；不要写 image:，否则 Portainer 会去 registry 拉它
     container_name: workbuddy2api
     restart: unless-stopped
     init: true
@@ -21,7 +21,6 @@ services:
       ADMIN_UPSTREAM_START_INTERVAL_MS: ${ADMIN_UPSTREAM_START_INTERVAL_MS:-75}
       TZ: Asia/Shanghai
     volumes:
-      # ⚠️ 绝对路径：与旧栈完全一致，保证数据库原地不动
       - /opt/1panel/apps/hermes-agent/Hermes-Agent/data/workspace/workbuddy2api/data:/app/data
     ports:
       - "8790:8790"
@@ -42,6 +41,7 @@ services:
       dsh:
         aliases:
           - wb-gw
+
 networks:
   dsh:
     external: true
