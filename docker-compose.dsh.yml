@@ -1,0 +1,48 @@
+# wb2api —— Portainer GitOps 部署（容器名/网络别名/数据目录全部沿用旧栈）
+services:
+  workbuddy2api:
+    build: .
+    image: wb2api:local
+    container_name: workbuddy2api
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: "8790"
+      ADMIN_DATABASE_URL: sqlite:////app/data/workbuddy.db
+      ADMIN_REDIS_URL: ""
+      ADMIN_GATEWAY_LIMIT_BACKEND: memory
+      ADMIN_ENABLE_DOCS: "0"
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?请在 Portainer Stack 环境变量里设置}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?请在 Portainer Stack 环境变量里设置}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?请在 Portainer Stack 环境变量里设置}
+      ADMIN_TRUSTED_PROXY_IPS: ${ADMIN_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      ADMIN_UPSTREAM_START_INTERVAL_MS: ${ADMIN_UPSTREAM_START_INTERVAL_MS:-75}
+      TZ: Asia/Shanghai
+    volumes:
+      # ⚠️ 绝对路径：与旧栈完全一致，保证数据库原地不动
+      - /opt/1panel/apps/hermes-agent/Hermes-Agent/data/workspace/workbuddy2api/data:/app/data
+    ports:
+      - "8790:8790"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8790/api/app/version',timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      dsh:
+        aliases:
+          - wb-gw
+networks:
+  dsh:
+    external: true
+    name: deepseek-harness_default
