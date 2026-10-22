@@ -72,6 +72,22 @@ def _stats_cache_key(kind, values):
     return kind, json.dumps(values, sort_keys=True, default=str, separators=(',', ':'))
 
 
+def _stable_window_start(start, days):
+    """Quantise the derived window start so repeated requests share a cache key.
+
+    ``datetime.utcnow() - timedelta(days=1)`` changes on every call, which made
+    every request a cache miss and defeated single-flight entirely. Rounding to
+    the minute keeps the numbers honest while letting identical panel refreshes
+    reuse one aggregation.
+    """
+    if start:
+        return start
+    if not days or days <= 0:
+        return None
+    window = datetime.utcnow() - timedelta(days=min(days, 3650))
+    return window.replace(second=0, microsecond=0)
+
+
 def _stats_cache_get(key):
     now = time.monotonic()
     with _stats_cache_lock:
@@ -812,8 +828,9 @@ def log_summary(
     end: Optional[str] = None, result: Optional[str] = None,
     _: bool = Depends(require_admin), db: Session = Depends(get_db),
 ):
+    window_start = _stable_window_start(start, days)
     cache_key = _stats_cache_key('summary', (
-        days, account_id, key_id, model, key, account, client_ip, start, end, result))
+        days, account_id, key_id, model, key, account, client_ip, window_start, end, result))
 
     def compute():
         success = func.coalesce(UsageLog.error_kind, "").in_(("", "success"))
@@ -827,7 +844,6 @@ def log_summary(
             func.avg(UsageLog.latency_ms), func.max(UsageLog.created_at),
             func.coalesce(func.sum(case((success, 0), else_=1)), 0),
         )
-        window_start = start or (datetime.utcnow() - timedelta(days=days) if days > 0 else None)
         q, short = _build_filters(q, key_id=key_id,
             account_ids=[account_id] if account_id is not None else None,
             models=None, model=model, key=key, account=account,
@@ -871,8 +887,7 @@ def log_ip_summary(
     low_tokens = max(0, min(1000000, low_tokens))
     min_requests = max(1, min(1000000, min_requests))
     limit = max(1, min(100, limit))
-    if not start and days > 0:
-        start = datetime.utcnow() - timedelta(days=min(days, 3650))
+    start = _stable_window_start(start, days)
     cache_key = _stats_cache_key('ip_summary', (
         key_id, account_id, model, key, account, client_ip, start, end, result,
         low_tokens, min_requests, sort, limit))
