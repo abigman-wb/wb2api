@@ -179,6 +179,7 @@ class UsageLog(Base):
         Index("ix_usage_logs_key_created", "api_key_id", "created_at"),
         Index("ix_usage_logs_model_created", "model", "created_at"),
         Index("ix_usage_logs_error_created", "error_kind", "created_at"),
+        Index("ix_usage_logs_ip_created", "client_ip", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -272,12 +273,15 @@ class RequestAudit(Base):
     __table_args__ = (
         Index("ix_request_audit_key_started", "api_key_id", "started_at"),
         Index("ix_request_audit_started", "started_at"),
+        Index("ix_request_audit_ip_started", "client_ip", "started_at"),
     )
     id = Column(Integer, primary_key=True, autoincrement=True)
     request_id = Column(String(32), nullable=False)
     api_key_id = Column(Integer, nullable=False)
     account_id = Column(Integer, nullable=True)
+    client_ip = Column(String(64), default="")
     path = Column(String(80), nullable=False)
+    user_agent = Column(String(512), default="")
     model = Column(String(120), default="")
     started_at = Column(DateTime, nullable=False)
     finished_at = Column(DateTime, nullable=False)

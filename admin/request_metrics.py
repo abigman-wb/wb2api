@@ -266,7 +266,7 @@ def activity_snapshot(paths, key_ids=None, limit=100):
     """Copy only bounded display fields; leave diagnostic histories untouched."""
     fields = ('id', 'key_id', 'path', 'requested_model', 'started_at', 'status',
               'outcome', 'phase', 'request_error', 'network_error', 'upstream_error',
-              'upstream_attempts', 'last_account_id')
+              'upstream_attempts', 'last_account_id', 'client_ip')
     def visible(record):
         return (record.get('key_id') and record.get('path') in paths
                 and (key_ids is None or record['key_id'] in key_ids))
@@ -371,12 +371,16 @@ class TimingMiddleware:
         try:
             from starlette.requests import Request
             from admin.client_ip import request_ip
-            client_ip = request_ip(Request(scope))
+            request = Request(scope)
+            client_ip = request_ip(request)
+            user_agent = request.headers.get('user-agent', '').strip()[:512]
         except Exception:
             client_ip = 'unknown'
+            user_agent = ''
         record = {'id': uuid.uuid4().hex, 'path': scope['path'],
                   'method': scope.get('method', ''),
                   'client_ip': client_ip,
+                  'user_agent': user_agent,
                   'started_at': datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
                   'status': None, 'headers_ms': None, 'first_body_ms': None, 'total_ms': None,
                   'first_delta_ms': None, 'request_bytes': 0, 'response_bytes': 0,
@@ -442,6 +446,8 @@ class TimingMiddleware:
                 record['outcome'] = 'interrupted'
             raise
         finally:
+            from admin.request_payload import release
+            release(record)
             record['total_ms'] = round((time.perf_counter()-start)*1000, 1)
             if record['request_error'] == 'client_disconnected' and not record['upload_complete']:
                 record['outcome'] = 'disconnected'

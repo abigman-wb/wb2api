@@ -44,7 +44,7 @@ HTTP_LIMITS = backend.HTTP_LIMITS
 
 
 def _stream_timeout() -> httpx.Timeout:
-    """流式请求的超时：不设总时长上限，只分别约束「连接 / 静默 / 上传 / 取连接」。
+    """Set phase-specific upstream timeouts; the ASGI gateway adds an overall deadline.
 
     先澄清一个容易搞错的点：`httpx.AsyncClient(timeout=300)` **不是**总时长 5 分钟，
     它把 connect/read/write/pool 四项**各**设为 300s。所以原代码并不会在流式
@@ -70,13 +70,12 @@ def _stream_timeout() -> httpx.Timeout:
     到点强行掐断长连接 SSE，客户端只看到 undici `TypeError: terminated` /
     "SSE stream disconnected"。官方把它当必须修的 bug，修法就是「总时长 = 0」。
 
-    教训迁移到我们这边：**永远不要给流式响应加总时长上限**。所以这里显式拆开
-    四项，只让 read 承担「静默多久算死」的职责，不给整个响应设 deadline。
+    这里仍将四项分别配置，让 read 表示上游静默多久算失败。请求整体还有
+    GatewayAdmissionMiddleware 的绝对时限，覆盖排队、上传、上游处理与客户端接收。
 
     这里的 read 实际就等价于参考实现 internal/upstream/idle.go 的空闲监控
     （有数据就续期、静默即取消），而且不需要额外起监控任务。因此**非流式端点
-    也用这一套**：上游一律以 `stream: true` 返回 SSE，我们在内部聚合，
-    用静默上限而不是总时长，长推理才不会被自己掐断。
+    也用这一套**：上游一律以 `stream: true` 返回 SSE，我们在内部聚合。
     """
     return httpx.Timeout(
         connect=settings.STREAM_CONNECT_TIMEOUT,
@@ -465,6 +464,13 @@ def _record_usage(key_id: int, account_id: int, model: str, credits: float | Non
             db.add(log)
             db.commit()
             log_id = log.id
+            # Commit accounting first. Optional content must never roll back a
+            # debit or trigger inference retries if caching fails.
+            try:
+                from admin.request_payload import store
+                store(log_id)
+            except Exception:
+                _logger.warning("Request content cache failed for usage %s", log_id)
             if estimated and account_id and updated_auth_json:
                 threading.Thread(
                     target=_fetch_real_credits,
@@ -1686,7 +1692,7 @@ async def _prepare_stream_response(source, anthropic=False):
 
 async def _select_account_with_wait(db, **kwargs):
     try:
-        deadline = time.monotonic() + max(1, getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 180))
+        deadline = time.monotonic() + max(1, getattr(settings, 'GATEWAY_QUEUE_TIMEOUT', 90))
         while True:
             if kwargs.get('key_id') is not None:
                 await _blocking_call(check_key_current, kwargs['key_id'])
@@ -1733,6 +1739,11 @@ async def _request_json(request):
     with request_metrics.measure('read_request_body'):
         try:
             payload = await request.json()
+            try:
+                from admin.request_payload import capture
+                capture(request.headers, await request.body())
+            except Exception:
+                _logger.warning('Optional ingress request capture failed')
             record = request_metrics.current.get()
             if record is not None and isinstance(payload, dict):
                 model = payload.get('model')

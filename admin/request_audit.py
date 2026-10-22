@@ -18,6 +18,8 @@ def save(record):
             db.add(RequestAudit(
                 request_id=record['id'], api_key_id=key_id,
                 account_id=record.get('last_account_id'),
+                client_ip=(record.get('client_ip') or '')[:64],
+                user_agent=(record.get('user_agent') or '')[:512],
                 path=record['path'][:80], model=record.get('requested_model', '')[:120],
                 started_at=datetime.fromisoformat(record['started_at']).astimezone(timezone.utc).replace(tzinfo=None),
                 finished_at=datetime.now(timezone.utc).replace(tzinfo=None),

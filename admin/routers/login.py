@@ -346,10 +346,11 @@ def login_start(_: bool = Depends(require_admin)):
     不涉及用户输入，所以前端进页面即可调用；返回的 `auth_url` 仅用于
     「手动授权」兜底展示，正常流程用不到。
     """
-    try:
-        sess = wb_login.start_login()
-    except wb_login.WbLoginError as e:
-        raise _fail(e, 502)
+    with _upstream_slot("login_start"):
+        try:
+            sess = wb_login.start_login()
+        except wb_login.WbLoginError as e:
+            raise _fail(e, 502)
     return {"sid": sess.sid, "auth_url": sess.plugin_auth_url}
 
 
@@ -366,7 +367,7 @@ def _send_guarded(body, ip):
     try:
         mobile = wb_login.normalize_mobile(body.mobile, body.country_code)
         sess = wb_login.get_session(body.sid)
-        with _upstream_slot("send"), sess.lock:
+        with _session_slot(sess, "send"), _upstream_slot("send"):
             if sess.consumed or sess.expired():
                 raise wb_login.WbLoginError("会话已失效", step="session")
             if sess.sms_state_token and (sess.mobile != mobile or sess.country_code != body.country_code.lstrip("+")):
@@ -407,7 +408,8 @@ def login_verify(
     except wb_login.WbLoginError as e:
         raise _fail(e, 502)
 
-    out = _verify_and_store(sess, body.code, db, account_id=body.account_id)
+    with _session_slot(sess, "verify"), _upstream_slot("verify"):
+        out = _verify_and_store(sess, body.code, db, account_id=body.account_id)
     return {
         "ok": True,
         "duplicated": out["duplicated"],
@@ -658,6 +660,41 @@ def _upstream_slot(reason: str):
     return _Ctx()
 
 
+def _session_slot(sess, reason: str):
+    """Claim one session operation without tying up a worker on its RLock."""
+    class _Ctx:
+        def __enter__(self_inner):
+            if not sess.lock.acquire(blocking=False):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"message": "该登录会话正在处理中，请稍后重试",
+                            "step": "busy", "reason": reason},
+                    headers={"Retry-After": "2"})
+            return self_inner
+
+        def __exit__(self_inner, *exc):
+            sess.lock.release()
+            return False
+
+    return _Ctx()
+
+
+def _try_session_slot(sess):
+    class _Ctx:
+        acquired = False
+
+        def __enter__(self_inner):
+            self_inner.acquired = sess.lock.acquire(blocking=False)
+            return self_inner.acquired
+
+        def __exit__(self_inner, *exc):
+            if self_inner.acquired:
+                sess.lock.release()
+            return False
+
+    return _Ctx()
+
+
 @public_router.post("/api/join/start")
 def join_start(body: JoinIn, request: Request):
     """公开：发起一次注册会话。"""
@@ -692,7 +729,8 @@ def join_verify(body: JoinIn, request: Request, db: Session = Depends(get_db)):
     except wb_login.WbLoginError as e:
         raise _fail(e, 502)
 
-    out = _verify_and_store(sess, body.sms_code, db)
+    with _session_slot(sess, "verify"), _upstream_slot("verify"):
+        out = _verify_and_store(sess, body.sms_code, db)
 
     # 公开接口**不回显** uid / 账号 id，只回模糊化的账号名，
     # 避免陌生人靠反复登录枚举号池内容。
@@ -753,7 +791,9 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
         raise _fail(e, 502)
 
     # 已成功过 -> 直接复用（幂等）
-    with sess.lock:
+    with _try_session_slot(sess) as acquired:
+        if not acquired:
+            return {"done": False, "busy": True}
         if sess.result_cache is not None:
             cached = sess.result_cache
             return {
@@ -777,11 +817,15 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
             return {"done": False}
 
         try:
-            credential, meta = wb_login.build_credential_from_token(token)
+            with _upstream_slot("poll_finalize"):
+                credential, meta = wb_login.build_credential_from_token(token)
+                out = _store_verified_credential(credential, meta, db)
+        except HTTPException as he:
+            if he.status_code == 503:
+                return {"done": False, "busy": True}
+            raise
         except wb_login.WbLoginError as e:
             raise _fail(e, 502)
-
-        out = _store_verified_credential(credential, meta, db)
         sess.result_cache = dict(out)
         sess.consumed = True
         sess.consumed_at = time.time()

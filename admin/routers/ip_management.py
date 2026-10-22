@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from admin.db import get_db
 from admin.ip_access import invalidate_ip_cache
-from admin.models import BlockedIP, IPRequestBucket, UsageLog, ClientIdentity, ClientIdentitySeen
+from admin.models import BlockedIP, IPRequestBucket, UsageLog, ClientIdentity, ClientIdentitySeen, RequestAudit
 from admin.client_ip import normalize_ip, request_ip
 from admin.ip_activity import flush
 from admin.security import require_admin
@@ -105,6 +105,31 @@ def _blocked_item(row: BlockedIP) -> dict:
     }
 
 
+def _client_details(db: Session, ips: list[str], start: datetime) -> dict[str, dict]:
+    """Read bounded metadata for the current page, with no per-IP queries."""
+    if not ips:
+        return {}
+    details = {ip: {"user_agent": "", "device_ids": [], "fingerprints": [],
+                    "macs": [], "identity_source": "client_reported"} for ip in ips}
+    latest = (db.query(RequestAudit.client_ip.label("ip"), func.max(RequestAudit.id).label("id"))
+              .filter(RequestAudit.client_ip.in_(ips), RequestAudit.started_at >= start)
+              .group_by(RequestAudit.client_ip).subquery())
+    for ip, ua in (db.query(RequestAudit.client_ip, RequestAudit.user_agent)
+                   .join(latest, RequestAudit.id == latest.c.id).all()):
+        details[ip]["user_agent"] = ua or ""
+    identities = (db.query(ClientIdentitySeen.ip, ClientIdentity.kind, ClientIdentity.value)
+                  .join(ClientIdentity, (ClientIdentity.kind == ClientIdentitySeen.kind) &
+                        (ClientIdentity.digest == ClientIdentitySeen.digest))
+                  .filter(ClientIdentitySeen.ip.in_(ips), ClientIdentitySeen.last_seen >= start)
+                  .order_by(ClientIdentitySeen.last_seen.desc()).limit(5000).all())
+    fields = {"device_id": "device_ids", "fingerprint": "fingerprints", "mac": "macs"}
+    for ip, kind, value in identities:
+        field = fields.get(kind)
+        if field and value not in details[ip][field] and len(details[ip][field]) < 3:
+            details[ip][field].append(value)
+    return details
+
+
 @router.get("/blocked")
 def list_blocked_ips(_: bool = Depends(require_admin), db: Session = Depends(get_db)):
     rows = db.query(BlockedIP).order_by(BlockedIP.enabled.desc(), BlockedIP.created_at.desc()).all()
@@ -172,6 +197,10 @@ def ip_activity(
     direction: Literal["asc", "desc"] = "desc",
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    min_requests: int = Query(default=0, ge=0, le=1000000),
+    max_avg_tokens: Optional[float] = Query(default=None, ge=0, le=1000000000),
+    max_avg_credits: Optional[float] = Query(default=None, ge=0, le=1000000000),
+    ip: Optional[str] = Query(default=None, max_length=64),
     _: bool = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -205,6 +234,9 @@ def ip_activity(
               .group_by(combined.c.ip).subquery())
     usage = (db.query(UsageLog.client_ip.label("ip"),
                       func.sum(UsageLog.credits).label("credits"),
+                      func.avg(UsageLog.credits).label("avg_credits"),
+                      func.avg(UsageLog.total_tokens).label("avg_tokens"),
+                      func.count(UsageLog.total_tokens).label("known_usage"),
                       func.sum(UsageLog.total_tokens).label("tokens"))
              .filter(UsageLog.created_at >= start, UsageLog.error_kind.in_(_OK_KINDS))
              .group_by(UsageLog.client_ip).subquery())
@@ -214,11 +246,24 @@ def ip_activity(
              "blocked_requests": counts.c.blocked_requests, "credits": credits,
              "tokens": tokens, "last_seen": counts.c.last_seen, "ip": counts.c.ip}
     order = sorts[sort].asc() if direction == "asc" else sorts[sort].desc()
-    rows = (db.query(counts, credits.label("credits"), tokens.label("tokens"))
-            .outerjoin(usage, counts.c.ip == usage.c.ip)
-            .order_by(order, counts.c.ip.asc()).offset(offset).limit(limit).all())
+    query = (db.query(counts, credits.label("credits"), tokens.label("tokens"),
+                     usage.c.avg_credits, usage.c.avg_tokens, usage.c.known_usage)
+             .outerjoin(usage, counts.c.ip == usage.c.ip)
+             .filter(counts.c.requests >= min_requests))
+    if max_avg_tokens is not None:
+        query = query.filter(usage.c.avg_tokens <= max_avg_tokens)
+    if max_avg_credits is not None:
+        query = query.filter(usage.c.known_usage > 0, usage.c.avg_credits <= max_avg_credits)
+    if ip:
+        try:
+            normalized = normalize_ip(ip)
+        except ValueError:
+            normalized = None
+        query = query.filter(counts.c.ip == normalized) if normalized else query.filter(counts.c.ip.contains(ip, autoescape=True))
+    rows = query.order_by(order, counts.c.ip.asc()).offset(offset).limit(limit).all()
     blocked_rows = db.query(BlockedIP).filter(BlockedIP.enabled == 1).all()
     blocked_by_ip = {row.ip: row for row in blocked_rows}
+    client_details = _client_details(db, [row.ip for row in rows], start)
     items = []
     for row in rows:
         ban = blocked_by_ip.get(row.ip)
@@ -226,10 +271,14 @@ def ip_activity(
             "ip": row.ip, "requests": int(row.requests or 0),
             "failed": int(row.failed or 0), "blocked_requests": int(row.blocked_requests or 0),
             "credits": round(float(row.credits or 0), 4), "tokens": int(row.tokens or 0),
+            "avg_tokens": round(float(row.avg_tokens), 1) if row.avg_tokens is not None else None,
+            "avg_credits": round(float(row.avg_credits), 6) if row.avg_credits is not None else None,
+            "known_usage": int(row.known_usage or 0),
             "last_seen": row.last_seen.isoformat() if row.last_seen else None,
             "blocked": ban is not None, "blocked_id": ban.id if ban else None,
+            "client_details": client_details[row.ip],
         })
-    totals = db.query(func.count(), func.coalesce(func.sum(counts.c.requests), 0)).select_from(counts).one()
+    totals = query.with_entities(func.count(), func.coalesce(func.sum(counts.c.requests), 0)).one()
     return {
         "days": days,
         "sort": sort, "direction": direction,

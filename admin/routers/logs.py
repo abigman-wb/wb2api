@@ -35,15 +35,17 @@
 """
 import asyncio
 import csv
+import copy
 import io
 import json
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request, Response, HTTPException
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, case
 from sqlalchemy.orm import Session, defer
@@ -52,6 +54,38 @@ from starlette.concurrency import run_in_threadpool
 from admin.db import get_db
 from admin.models import Account, ApiKey, UsageLog, RequestAudit
 from admin.security import require_admin, verify_admin_token
+
+
+_stats_cache_lock = threading.Lock()
+_stats_cache = OrderedDict()
+_STATS_CACHE_TTL = 5.0
+_STATS_CACHE_MAX = 64
+
+
+def _stats_cache_key(kind, values):
+    return kind, json.dumps(values, sort_keys=True, default=str, separators=(',', ':'))
+
+
+def _stats_cache_get(key):
+    now = time.monotonic()
+    with _stats_cache_lock:
+        entry = _stats_cache.get(key)
+        if entry is None:
+            return None
+        expires, value = entry
+        if expires <= now:
+            _stats_cache.pop(key, None)
+            return None
+        _stats_cache.move_to_end(key)
+        return copy.deepcopy(value)
+
+
+def _stats_cache_put(key, value):
+    with _stats_cache_lock:
+        _stats_cache[key] = (time.monotonic() + _STATS_CACHE_TTL, copy.deepcopy(value))
+        _stats_cache.move_to_end(key)
+        while len(_stats_cache) > _STATS_CACHE_MAX:
+            _stats_cache.popitem(last=False)
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
 
@@ -83,6 +117,7 @@ def _activity_probe(db: Session, key: Optional[str], limit: int,
     def live(record):
         return {'request_id': record['id'], 'key_id': record['key_id'],
                 'account_id': record.get('last_account_id'),
+                'client_ip': record.get('client_ip') or '',
                 'path': record['path'], 'model': record.get('requested_model', ''),
                 'started_at': record['started_at'], 'status': record.get('status'),
                 'outcome': record['outcome'], 'elapsed_ms': record['elapsed_ms'],
@@ -96,6 +131,7 @@ def _activity_probe(db: Session, key: Optional[str], limit: int,
     rows = query.order_by(RequestAudit.started_at.desc(), RequestAudit.id.desc()).limit(limit).all()
     completed = {r.request_id: {'request_id': r.request_id, 'key_id': r.api_key_id,
                  'account_id': r.account_id,
+                 'client_ip': r.client_ip or '',
                  'path': r.path, 'model': r.model, 'started_at': r.started_at.isoformat()+'Z',
                  'status': r.status, 'outcome': r.outcome, 'elapsed_ms': r.elapsed_ms,
                  'phase': r.phase, 'reason': r.reason, 'upstream_attempts': r.upstream_attempts}
@@ -394,7 +430,13 @@ def _build_filters(q, *, key_id, account_ids, models, model, key, account,
             return q, True
         q = q.filter(UsageLog.account_id.in_(aids))
     if client_ip:
-        q = q.filter(UsageLog.client_ip.like(f"%{client_ip}%"))
+        from admin.client_ip import normalize_ip
+        try:
+            normalized = normalize_ip(client_ip)
+        except ValueError:
+            normalized = None
+        q = q.filter(UsageLog.client_ip == normalized) if normalized else q.filter(
+            UsageLog.client_ip.contains(client_ip, autoescape=True))
     def timestamp(value):
         if not isinstance(value, str):
             return value
@@ -495,9 +537,17 @@ def list_logs(
     total = None
     stats = None
     if with_total and before_id is None:
-        total, successes = q.with_entities(func.count(UsageLog.id), func.coalesce(func.sum(case(
-            (func.coalesce(UsageLog.error_kind, "").in_(("", "success")), 1), else_=0)), 0)).one()
-        stats = {"total": total, "success": int(successes), "error": total - int(successes)}
+        cache_key = _stats_cache_key('list_total', (
+            key_id, account_id, model, key, account, client_ip, start, end, result))
+        stats = _stats_cache_get(cache_key)
+        if stats is None:
+            total, successes = q.with_entities(func.count(UsageLog.id), func.coalesce(func.sum(case(
+                (func.coalesce(UsageLog.error_kind, "").in_(("", "success")), 1), else_=0)), 0)).one()
+            total = int(total or 0)
+            successes = int(successes or 0)
+            stats = {"total": total, "success": successes, "error": total - successes}
+            _stats_cache_put(cache_key, stats)
+        total = stats['total']
 
     # keyset 分页优先；否则退回 OFFSET
     if before_id is not None:
@@ -558,7 +608,7 @@ def export_logs(
     name_term = account if not account_id else None
 
     q, short = _build_filters(
-        db.query(UsageLog) if diagnostics else db.query(UsageLog).options(defer(UsageLog.diagnostic_json)),
+        db.query(UsageLog).options(*([] if diagnostics else [defer(UsageLog.diagnostic_json)])),
         key_id=key_id, account_ids=account_ids, models=None, model=model,
         key=key, account=name_term,
         client_ip=client_ip, start=start, end=end, db=db, result=result,
@@ -623,6 +673,10 @@ def log_accounts(
     附带每个账号的请求数 / 积分 / 最近使用时间，让用户在**选之前**
     就知道哪个号有数据、值不值得点进去看。
     """
+    cache_key = _stats_cache_key('accounts', (days,))
+    cached = _stats_cache_get(cache_key)
+    if cached is not None:
+        return cached
     since = datetime.utcnow() - timedelta(days=max(1, days))
     rows = (
         db.query(
@@ -647,7 +701,7 @@ def log_accounts(
                 "balance_remain": int(a.balance_remain or 0),
                 "expiring_soon": int(a.credits_expiring_soon or 0),
             }
-    return {
+    result = {
         "range_days": days,
         "items": [
             {
@@ -664,6 +718,8 @@ def log_accounts(
             for aid, cnt, cr, last in rows
         ],
     }
+    _stats_cache_put(cache_key, result)
+    return result
 
 
 @router.get("/summary")
@@ -675,6 +731,11 @@ def log_summary(
     end: Optional[str] = None, result: Optional[str] = None,
     _: bool = Depends(require_admin), db: Session = Depends(get_db),
 ):
+    cache_key = _stats_cache_key('summary', (
+        days, account_id, key_id, model, key, account, client_ip, start, end, result))
+    cached = _stats_cache_get(cache_key)
+    if cached is not None:
+        return cached
     success = func.coalesce(UsageLog.error_kind, "").in_(("", "success"))
     q = db.query(
         UsageLog.account_id, func.count(UsageLog.id),
@@ -707,12 +768,86 @@ def log_summary(
             "avg_latency_ms": int(avg_lat or 0),
             "last_used_at": last.isoformat() if last else None,
         })
-    return {"range_days": days, "total_requests": sum(i["requests"] for i in items),
-            "ok_requests": sum(i["ok_requests"] for i in items),
-            "failed_requests": sum(i["failed_requests"] for i in items),
-            "account_count": sum(1 for i in items if i["account_id"]),
-            "unattributed_requests": sum(i["requests"] for i in items if not i["account_id"]),
-            "total_credits": round(sum(i["credits"] for i in items), 4), "items": items}
+    result_data = {"range_days": days, "total_requests": sum(i["requests"] for i in items),
+                   "ok_requests": sum(i["ok_requests"] for i in items),
+                   "failed_requests": sum(i["failed_requests"] for i in items),
+                   "account_count": sum(1 for i in items if i["account_id"]),
+                   "unattributed_requests": sum(i["requests"] for i in items if not i["account_id"]),
+                   "total_credits": round(sum(i["credits"] for i in items), 4), "items": items}
+    _stats_cache_put(cache_key, result_data)
+    return result_data
+
+
+@router.get("/ip-summary")
+def log_ip_summary(
+    key_id: Optional[int] = None, account_id: Optional[int] = None,
+    model: Optional[str] = None, key: Optional[str] = None,
+    account: Optional[str] = None, client_ip: Optional[str] = None,
+    start: Optional[str] = None, end: Optional[str] = None,
+    result: Optional[str] = None, low_tokens: int = 100,
+    min_requests: int = 1, sort: str = "requests", limit: int = 50, days: int = 1,
+    _: bool = Depends(require_admin), db: Session = Depends(get_db),
+):
+    """Filtered usage, not ingress: unknown token counts never mean zero."""
+    low_tokens = max(0, min(1000000, low_tokens))
+    min_requests = max(1, min(1000000, min_requests))
+    limit = max(1, min(100, limit))
+    if not start and days > 0:
+        start = datetime.utcnow() - timedelta(days=min(days, 3650))
+    requests = func.count(UsageLog.id).label('requests')
+    known = func.count(UsageLog.total_tokens).label('known')
+    credits = func.coalesce(func.sum(UsageLog.credits), 0).label('credits')
+    tokens = func.sum(UsageLog.total_tokens).label('tokens')
+    average = func.avg(UsageLog.total_tokens).label('avg_tokens')
+    low = func.sum(case((UsageLog.total_tokens <= low_tokens, 1), else_=0)).label('low')
+    zero = func.sum(case((UsageLog.total_tokens == 0, 1), else_=0)).label('zero')
+    failed = func.sum(case((func.coalesce(UsageLog.error_kind, '').in_(('', 'success')), 0), else_=1))
+    q = db.query(UsageLog.client_ip, requests, known, credits, tokens, average, low, zero,
+                 failed.label('failed'), func.max(UsageLog.created_at).label('last'))
+    q, short = _build_filters(q, key_id=key_id,
+        account_ids=[account_id] if account_id is not None else None,
+        models=None, model=model, key=key, account=account if account_id is None else None,
+        client_ip=client_ip, start=start, end=end, db=db, result=result)
+    orders = {'requests': requests.desc(), 'low_tokens': low.desc(),
+              'avg_tokens': average.asc(), 'credits': credits.asc()}
+    if sort not in orders:
+        raise HTTPException(400, "IP 排序方式无效")
+    order = [orders[sort], requests.desc(), UsageLog.client_ip.asc()]
+    if sort == 'avg_tokens':
+        order.insert(0, case((known == 0, 1), else_=0))
+    rows = [] if short else q.group_by(UsageLog.client_ip).having(requests >= min_requests).order_by(
+        *order).limit(limit + 1).all()
+    items = []
+    for r in rows[:limit]:
+        items.append({'client_ip': r.client_ip or '', 'requests': int(r.requests),
+            'known_usage_requests': int(r.known), 'missing_usage_requests': int(r.requests-r.known),
+            'total_tokens': int(r.tokens) if r.tokens is not None else None,
+            'avg_tokens': round(float(r.avg_tokens), 1) if r.avg_tokens is not None else None,
+            'low_token_requests': int(r.low), 'zero_token_requests': int(r.zero),
+            'credits': round(float(r.credits), 4), 'avg_credits': round(float(r.credits)/r.requests, 6),
+            'failed_requests': int(r.failed), 'last_used_at': r.last.isoformat() if r.last else None})
+    return {'items': items, 'has_more': len(rows) > limit, 'low_tokens': low_tokens,
+            'min_requests': min_requests, 'limit': limit, 'sort': sort}
+
+
+@router.get("/capture/settings")
+def capture_settings(_=Depends(require_admin)):
+    from admin.request_payload import status
+    return status()
+
+
+@router.put("/capture/settings")
+def update_capture_settings(body: dict = Body(...), _=Depends(require_admin)):
+    from admin.request_payload import configure
+    if set(body) != {'enabled'} or type(body.get('enabled')) is not bool:
+        raise HTTPException(400, "enabled 必须为布尔值")
+    return configure(body['enabled'])
+
+
+@router.delete("/capture/cache")
+def clear_capture_cache(_=Depends(require_admin)):
+    from admin.request_payload import clear
+    return clear()
 
 
 @router.get("/{log_id}")
@@ -722,8 +857,47 @@ def log_detail(log_id: int, db: Session = Depends(get_db), _=Depends(require_adm
         raise HTTPException(status_code=404, detail="使用记录不存在")
     keys, accounts = _name_maps(db, {row.api_key_id}, {row.account_id})
     item = _serialize([row], keys, accounts)[0]
+    from admin.request_payload import get
+    item['request_capture'] = get(log_id, include_bodies=False)
     try:
         item["diagnostic"] = json.loads(row.diagnostic_json) if row.diagnostic_json else None
     except (TypeError, ValueError):
         item["diagnostic"] = None
     return item
+
+
+@router.get("/{log_id}/capture/body")
+def capture_body(log_id: int, part: str = Query(default='ingress', max_length=32),
+                 offset: int = Query(default=0, ge=0), limit: int = Query(default=65536, ge=4, le=65536),
+                 response: Response = None, db: Session = Depends(get_db), _=Depends(require_admin)):
+    if not db.query(UsageLog.id).filter(UsageLog.id == log_id).first():
+        raise HTTPException(404, '使用记录不存在')
+    from admin.request_payload import body_page
+    page = body_page(log_id, part, offset, limit)
+    if page is None:
+        raise HTTPException(404, '请求正文缓存已过期或不可用')
+    if response is not None:
+        response.headers['Cache-Control']='no-store'
+        response.headers['X-Content-Type-Options']='nosniff'
+    return page
+
+
+@router.get("/{log_id}/capture/download")
+def download_capture(log_id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
+    item = log_detail(log_id, db, True)
+    from admin.request_payload import get
+    capture = get(log_id)
+    item.pop('request_capture', None)
+    diagnostic = item.pop('diagnostic', None)
+    def rows():
+        yield json.dumps({'type': 'usage', **item}, ensure_ascii=False)+'\n'
+        if capture:
+            yield json.dumps({'type': 'capture', 'captured_at': capture['captured_at'],
+                              'upstream_omitted': capture['upstream_omitted']})+'\n'
+            yield json.dumps({'type': 'ingress', **capture['ingress']}, ensure_ascii=False)+'\n'
+            for attempt in capture['upstream']:
+                yield json.dumps({'type': 'upstream_attempt', **attempt}, ensure_ascii=False)+'\n'
+        yield json.dumps({'type': 'diagnostic', 'data': diagnostic}, ensure_ascii=False)+'\n'
+    return StreamingResponse(rows(), media_type='application/x-ndjson',
+        headers={'Content-Disposition': f'attachment; filename="wb2api-usage-{log_id}.jsonl"',
+                 'Cache-Control': 'no-store'})

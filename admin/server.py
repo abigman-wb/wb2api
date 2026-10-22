@@ -112,7 +112,13 @@ async def _security_headers(request: Request, call_next):
     return response
 
 
-app.add_middleware(GatewayAdmissionMiddleware, wait_timeout=getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 180))
+app.add_middleware(
+    GatewayAdmissionMiddleware,
+    wait_timeout=getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 15),
+    request_timeout=getattr(settings, 'GATEWAY_REQUEST_TIMEOUT', 120),
+)
+from admin.join_limits import JoinAdmissionMiddleware
+app.add_middleware(JoinAdmissionMiddleware, max_active=settings.JOIN_MAX_CONCURRENT)
 
 from admin.request_metrics import TimingMiddleware
 app.add_middleware(TimingMiddleware, persist=True)

@@ -332,6 +332,12 @@ python converter.py --host 127.0.0.1 --port 8787 --api-key "<自设访问密钥>
 
 使用记录与用量日志支持按 Key、账号、模型及端点查询，日志中的模型和 Key 使用可搜索下拉，也可手动输入筛选。默认查看近期数据，需要长期趋势时调整时间窗口。管理面板状态写入 `?tab=`，刷新页面后保留当前面板，也可分享对应面板链接。
 
+用量日志和请求动态直接展示客户端 IP，支持复制及点击筛选。IP 管理的活跃 IP 表可筛选高频低 Token、高频低积分，设置最少请求数、平均消耗上限及 IP 地址；均值按成功用量记录统计，未返回 Token 的请求不作为低消耗。入口次数包含鉴权拒绝、限流和封禁；点击 IP 可查看用量明细。IP 仅从受信任代理的转发头读取，反向代理应覆盖 `X-Real-IP`；直连使用连接来源地址。
+
+调用详情先加载摘要，展开某次请求后按需读取正文，每页最多 64 KiB；翻页替换当前预览，关闭详情取消正在加载的预览。完整正文通过独立 JSONL 下载，不在页面中同时展开或复制多份大正文。记录时复用受限的原始字节缓存，避免重新序列化完整请求。
+
+调用详情支持下载 JSONL（用量、入站请求、转换后各次实际发往上游的请求和诊断）。在用量日志打开“记录请求详情”即时生效，默认关闭，仅记录开启后进入的 JSON 推理请求。请求内容仅存服务进程内存，1 小时过期，最多 200 条或 64 MiB，达到上限淘汰最旧记录；重启全部清空，开关恢复环境初始值。单请求入站及所有上游尝试合计上限 8 MiB，单份正文由 `ADMIN_LOG_PAYLOAD_MAX_MB` 控制（默认 8，范围 1–8），超出截断并明确标记。请求头采用保留名单并隐藏凭据，正文按实际序列化内容保存，可能包含完整对话；仅管理员可以读取。关闭停止新请求采集，已有缓存可手动清空。历史未记录、过期或淘汰的内容无法恢复。`ADMIN_LOG_REQUEST_PAYLOAD=1` 可改变重启后的初始开关。多进程部署各进程的开关和缓存独立，需使用单工作进程进行此项临时排查。
+
 ### 客户端参数与跨部署同步
 
 Windows 或源码部署的“客户端参数”页面可探测本机官方客户端版本和请求参数，查看每项取值来源，按需保存、重置或切换来源策略。`auto` 优先现场探测，适合装有官方客户端的电脑；`saved` 优先已保存档案，适合没有官方安装包的服务器。显式环境变量优先于这两种策略，兼容参数名以源码为准。
@@ -511,6 +517,9 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | `ADMIN_REDIS_URL` | Redis 连接地址，内存限流模式可留空 |
 | `ADMIN_GATEWAY_LIMIT_BACKEND` | `auto` / `redis` / `memory`，按部署选择 |
 | `ADMIN_GATEWAY_RATE_PER_MINUTE` / `ADMIN_GATEWAY_MAX_CONCURRENT` | 每 Key 的分钟请求量与并发准入上限 |
+| `ADMIN_GATEWAY_WAIT_TIMEOUT` / `ADMIN_GATEWAY_REQUEST_TIMEOUT` | Key 并发空位等待默认 `15` 秒（上限 `30`）；推理请求最长 `120` 秒，含排队、上传、上游处理和流式返回 |
+| `ADMIN_GATEWAY_QUEUE_TIMEOUT` | 请求内部排队上限，默认 `90` 秒，覆盖等上游发车间隔与等可用账号，独立于 Key 并发等待 |
+| `ADMIN_JOIN_MAX_CONCURRENT` | 注册接口最大并发数，超过后快速返回重试提示，默认 `4` |
 | `ADMIN_BACKEND` | 上游服务地址；保留实际域名，默认值以配置模板和源码为准 |
 | `ADMIN_CLIENT_AUTH_DIR` | 扫描和切换本机账号时读取的凭证目录 |
 | `ADMIN_ACCOUNT_SELECT` | `expiring`（默认）/ `oldest` / `remain` / `lru` / `weighted` |
@@ -518,7 +527,7 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | `ADMIN_POOL_MAX_ROTATE` / `ADMIN_POOL_MAX_TOTAL_ATTEMPTS` | 单请求的换号与总尝试次数上限，默认均为 `6` |
 | `ADMIN_POOL_RETRY_WINDOW` | 输出前重试窗口，默认 `90` 秒，不中断已经活跃的流 |
 | `ADMIN_SESSION_STICKY` / `ADMIN_SESSION_STICKY_TTL` | 会话粘性及空闲有效期，默认开启、`1800` 秒 |
-| `ADMIN_STREAM_CONNECT_TIMEOUT` / `ADMIN_STREAM_IDLE_TIMEOUT` | 上游连接与流静默超时，默认 `15` / `180` 秒 |
+| `ADMIN_STREAM_CONNECT_TIMEOUT` / `ADMIN_STREAM_IDLE_TIMEOUT` | 上游连接与流静默阶段超时，默认 `15` / `180` 秒；请求总时限另见网关配置 |
 | `ADMIN_STREAM_WRITE_TIMEOUT` / `ADMIN_STREAM_POOL_TIMEOUT` | 写请求与等待连接池超时，默认 `60` / `20` 秒 |
 | `ADMIN_KEEPALIVE_ENABLED` / `ADMIN_KEEPALIVE_HOURS` / `ADMIN_KEEPALIVE_ACCOUNT_GAP` | token 保活开关、执行整点及逐账号间隔 |
 | `ADMIN_ANTHROPIC_MODEL_OPUS` / `SONNET` / `HAIKU` | 三档模型别名映射，后三项均使用 `ADMIN_ANTHROPIC_MODEL_` 前缀 |
