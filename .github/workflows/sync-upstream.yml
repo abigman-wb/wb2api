@@ -1,0 +1,41 @@
+name: sync-upstream
+on:
+  schedule:
+    # 每天北京时间凌晨 3:00 运行
+    - cron: '0 3 * * *'
+      timezone: 'Asia/Shanghai'
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  UPSTREAM_REPO: https://github.com/xiaofan6ya/wb2api.git
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Probe upstream
+        id: probe
+        run: |
+          set +e
+          if GIT_TERMINAL_PROMPT=0 git ls-remote --heads "$UPSTREAM_REPO" master 2>/dev/null | grep -q master; then
+            echo "reachable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=上游不可达::${UPSTREAM_REPO} 无法访问，跳过本次同步。"
+          fi
+      - name: Merge upstream
+        if: steps.probe.outputs.reachable == 'true'
+        run: |
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_REPO" || true
+          git fetch upstream master
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "::notice title=已是最新::上游没有新提交。"
+            exit 0
+          fi
+          git merge upstream/master --no-edit -m "chore: sync upstream wb2api"
+          git push origin HEAD:master
