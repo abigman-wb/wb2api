@@ -1,14 +1,21 @@
+      
 name: sync-upstream
+
+# 上游 xiaofan6ya/wb2api → 本仓库 master。
+# GitHub 的 schedule 支持 timezone（IANA 字符串），所以下面直接写北京时间。
+# 想改成每 6 小时：cron 改成 '0 */6 * * *'，去掉 timezone 或保留都一样。
 on:
   schedule:
-    # 每天北京时间凌晨 3:00 运行
-    - cron: '0 3 * * *'
-      timezone: 'Asia/Shanghai'
+    - cron: "0 3 * * *"
+      timezone: "Asia/Shanghai"
   workflow_dispatch:
+
 permissions:
   contents: write
+
 env:
   UPSTREAM_REPO: https://github.com/xiaofan6ya/wb2api.git
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -16,6 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Probe upstream
         id: probe
         run: |
@@ -24,18 +32,53 @@ jobs:
             echo "reachable=true" >> "$GITHUB_OUTPUT"
           else
             echo "reachable=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=上游不可达::${UPSTREAM_REPO} 无法访问，跳过本次同步。"
+            echo "::notice title=上游不可达::${UPSTREAM_REPO} 无法访问，跳过本次同步（不影响本仓库与部署）。"
           fi
-      - name: Merge upstream
+
+      - name: Configure git
         if: steps.probe.outputs.reachable == 'true'
         run: |
           git config user.name "sync-bot"
           git config user.email "sync-bot@users.noreply.github.com"
+
+      - name: Fetch upstream
+        if: steps.probe.outputs.reachable == 'true'
+        run: |
           git remote add upstream "$UPSTREAM_REPO" || true
           git fetch upstream master
+          echo "upstream=$(git rev-parse --short upstream/master) local=$(git rev-parse --short HEAD)"
+
+      - name: Check push permission
+        # 提前暴露"仓库 Actions 权限是只读"这类问题；dry-run 不会写入任何东西
+        if: steps.probe.outputs.reachable == 'true'
+        run: git push --dry-run origin HEAD:master && echo "push 权限正常"
+
+      - name: Already up to date
+        id: uptodate
+        if: steps.probe.outputs.reachable == 'true'
+        run: |
           if git merge-base --is-ancestor upstream/master HEAD; then
-            echo "::notice title=已是最新::上游没有新提交。"
-            exit 0
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=已是最新::上游没有新提交，本次不做任何改动。"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=发现新提交::开始合并上游。"
           fi
-          git merge upstream/master --no-edit -m "chore: sync upstream wb2api"
+
+      - name: Merge upstream
+        if: steps.probe.outputs.reachable == 'true' && steps.uptodate.outputs.skip == 'false'
+        run: |
+          if ! git merge upstream/master --no-edit -m "chore: sync upstream wb2api"; then
+            git --no-pager diff --name-only --diff-filter=U | head -20
+            git merge --abort || true
+            echo "::error title=合并冲突::上游改动与本地文件冲突，已中止合并，未推送任何内容。"
+            exit 1
+          fi
+
+      - name: Push
+        if: steps.probe.outputs.reachable == 'true' && steps.uptodate.outputs.skip == 'false'
+        run: |
           git push origin HEAD:master
+          echo "::notice title=已同步::已推送 master；Portainer 下一轮轮询会重建镜像并重启容器。"
+
+    
