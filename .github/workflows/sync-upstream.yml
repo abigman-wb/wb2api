@@ -74,6 +74,23 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Refresh dependency lock
+        # 上游若改了依赖，锁必须跟着走：pip-compile 输出文件已存在时会保留旧 pin，
+        # 只新增缺的包、只提升被新约束强制影响的包。
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          if cmp -s requirements.txt requirements.in; then
+            echo "::notice title=依赖未变::requirements.txt 与 requirements.in 一致，锁保持不变。"
+            exit 0
+          fi
+          echo "上游改动了依赖，按现有 pin 重新解析（只动受影响的包）"
+          cp requirements.txt requirements.in
+          python -m pip install --disable-pip-version-check "pip-tools==7.6.2"
+          pip-compile requirements.in --output-file requirements.lock --strip-extras --quiet
+          git add requirements.in requirements.lock
+          git commit -m "build(deps): 跟随上游刷新依赖锁" || echo "::notice title=锁无变化::重新解析结果与原锁一致。"
+          git --no-pager diff --stat HEAD~1 HEAD || true
+
       - name: Gate 1/4 ruff
         if: steps.merge.outputs.changed == 'true'
         run: |
