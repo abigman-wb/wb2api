@@ -1,9 +1,12 @@
-      
 name: sync-upstream
 
 # 上游 xiaofan6ya/wb2api → 本仓库 master。
-# GitHub 的 schedule 支持 timezone（IANA 字符串），所以下面直接写北京时间。
-# 想改成每 6 小时：cron 改成 '0 */6 * * *'，去掉 timezone 或保留都一样。
+#
+# 我们是上游的真 fork（共享父提交），普通 merge 即可。
+#
+# 设计要点：master 上不设合并闸门（ruleset 只保留 force-push / 删除保护），
+# 于是把「闸门」搬到推送之前：先在 runner 里跑一遍与 CI 相同的检查，全绿才 push。
+# 上游发的东西坏掉时，本次同步中止，master 与线上都不受影响 —— 你只收到一封失败通知。
 on:
   schedule:
     - cron: "0 3 * * *"
@@ -19,6 +22,11 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      # compose 里的 ${VAR:?} 是必填校验；自检阶段给占位值
+      ADMIN_USERNAME: ci
+      ADMIN_PASSWORD: ci-password
+      ADMIN_JWT_SECRET: ci-jwt-secret
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,44 +49,64 @@ jobs:
           git config user.name "sync-bot"
           git config user.email "sync-bot@users.noreply.github.com"
 
-      - name: Fetch upstream
+      - name: Merge upstream
+        id: merge
         if: steps.probe.outputs.reachable == 'true'
         run: |
           git remote add upstream "$UPSTREAM_REPO" || true
           git fetch upstream master
           echo "upstream=$(git rev-parse --short upstream/master) local=$(git rev-parse --short HEAD)"
-
-      - name: Check push permission
-        # 提前暴露"仓库 Actions 权限是只读"这类问题；dry-run 不会写入任何东西
-        if: steps.probe.outputs.reachable == 'true'
-        run: git push --dry-run origin HEAD:master && echo "push 权限正常"
-
-      - name: Already up to date
-        id: uptodate
-        if: steps.probe.outputs.reachable == 'true'
-        run: |
           if git merge-base --is-ancestor upstream/master HEAD; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=已是最新::上游没有新提交，本次不做任何改动。"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=发现新提交::开始合并上游。"
+            exit 0
           fi
-
-      - name: Merge upstream
-        if: steps.probe.outputs.reachable == 'true' && steps.uptodate.outputs.skip == 'false'
-        run: |
           if ! git merge upstream/master --no-edit -m "chore: sync upstream wb2api"; then
             git --no-pager diff --name-only --diff-filter=U | head -20
             git merge --abort || true
             echo "::error title=合并冲突::上游改动与本地文件冲突，已中止合并，未推送任何内容。"
             exit 1
           fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.merge.outputs.changed == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Gate 1/4 ruff
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          python -m pip install --disable-pip-version-check "ruff==0.17.1"
+          ruff check .
+          ruff format --check . || echo "::warning title=format::存量文件未格式化（非阻断）"
+
+      - name: Gate 2/4 compose config
+        if: steps.merge.outputs.changed == 'true'
+        run: docker compose -f docker-compose.dsh.yml config --quiet
+
+      - name: Gate 3/4 docker build + import
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          docker build -t wb2api:sync .
+          docker run --rm -e ADMIN_DATABASE_URL=sqlite:////tmp/ci.db \
+            wb2api:sync python3 -c "import admin.server; print('import ok')"
+
+      - name: Gate 4/4 tests
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          if compgen -G "tests/*.py" > /dev/null; then
+            # 直接在构建好的镜像里跑，省一次依赖安装
+            docker run --rm \
+              -e ADMIN_REDIS_URL= -e ADMIN_GATEWAY_LIMIT_BACKEND=memory \
+              -v "$PWD:/src" -w /src wb2api:sync \
+              python3 -m unittest discover -s tests -t .
+          else
+            echo "::notice title=跳过测试::仓库里没有 tests/*.py"
+          fi
 
       - name: Push
-        if: steps.probe.outputs.reachable == 'true' && steps.uptodate.outputs.skip == 'false'
+        if: steps.merge.outputs.changed == 'true'
         run: |
           git push origin HEAD:master
-          echo "::notice title=已同步::已推送 master；Portainer 下一轮轮询会重建镜像并重启容器。"
-
-    
+          echo "::notice title=已同步::自检全绿并已推送 master；Portainer 下一轮轮询会重建镜像并重启容器。"
