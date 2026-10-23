@@ -3,7 +3,6 @@ import threading
 
 from starlette.responses import JSONResponse
 
-
 _JOIN_PATHS = {
     '/api/join/start',
     '/api/join/send',
