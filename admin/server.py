@@ -14,7 +14,7 @@ from admin.db import SessionLocal, get_db, init_db, wait_database_ready
 from admin.models import SystemSetting
 from admin.routers import (accounts, credits, groups,
                            growth, keys, login as login_router, logs, models,
-                           proxy, schedules, stats, sync)
+                           pool_budget, proxy, schedules, stats, sync)
 from admin.ratelimit import (clear_failures, get_client_ip, get_trusted_client_ip,
                              is_locked, record_failure)
 from admin.security import (
@@ -176,6 +176,7 @@ app.include_router(accounts.router)
 app.include_router(keys.router)
 app.include_router(models.router)
 app.include_router(proxy.router)
+app.include_router(pool_budget.router)
 app.include_router(audio.router)
 app.include_router(images.router)
 app.include_router(sync.router)

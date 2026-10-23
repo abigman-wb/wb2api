@@ -1476,6 +1476,30 @@
     <section id="panel-settings" class="hidden">
       <h2 class="settings-title">管理员设置</h2>
       <div class="settings-section">
+        <h3>号池窗口预算</h3>
+        <div class="settings-fields">
+          <p style="margin:0;font-size:12px;line-height:1.6;color:var(--fg-muted)">
+            上游按「账号 × N 小时窗口」限流（code 6000–6008），窗口起点是该号的第一笔请求、随用随滚。
+            达到预算的号会在选号时被跳过（提前换号），避免撞墙后整池冷却数小时。<b>0 = 关闭</b>；
+            建议值 = 实测撞墙点 × 0.9（本项目实测 235–284 积分/号/5 小时）。
+          </p>
+          <div class="settings-field">
+            <label for="wbBudgetInput">每号窗口积分预算</label>
+            <input id="wbBudgetInput" type="number" min="0" max="100000" step="10" inputmode="numeric" placeholder="例如 210" />
+          </div>
+          <div class="settings-field">
+            <label for="wbBudgetHoursInput">窗口长度（小时）</label>
+            <input id="wbBudgetHoursInput" type="number" min="0.5" max="24" step="0.5" inputmode="decimal" placeholder="5" />
+          </div>
+          <div class="settings-actions">
+            <button id="wbBudgetSave" class="console-btn primary" onclick="window.WBPoolBudget.save()"><i class="fa-solid fa-floppy-disk"></i>保存</button>
+            <button class="console-btn" onclick="window.WBPoolBudget.reset()">恢复默认</button>
+            <span id="wbBudgetStatus" class="settings-status" role="status"></span>
+          </div>
+          <div id="wbBudgetAccounts"></div>
+        </div>
+      </div>
+      <div class="settings-section">
         <h3>WorkBuddy 邀请绑定</h3>
         <div class="settings-fields">
           <div class="settings-field">
@@ -1978,7 +2002,7 @@ function activateTab(name, opts) {
   if (name === "credits") loadCreditStats();
   if (name === "logs") openLogsPanel();
   if (name === "client") loadClientProfile();
-  if (name === "settings") { loadAppSource(); loadInvitation(); }
+  if (name === "settings") { loadAppSource(); loadInvitation(); window.WBPoolBudget?.load(); }
   if (name === "models") loadModels();
   if (name === "growth") window.WBGrowthCenter?.enter();
   scheduleModelBusy();
@@ -7139,5 +7163,6 @@ if (TOKEN && !new URLSearchParams(location.search).has("desktop")) {
 <script src="/static/profile-transfer.js"></script>
 <script src="/static/ip-management.js"></script>
 <script src="/static/key-ip.js"></script>
+<script src="/static/pool-budget.js?v=20261024-budget"></script>
 </body>
 </html>
