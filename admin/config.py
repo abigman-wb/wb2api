@@ -23,7 +23,16 @@ _logger = logging.getLogger(__name__)
 
 
 class Settings:
-    GATEWAY_WAIT_TIMEOUT = float(os.getenv("ADMIN_GATEWAY_WAIT_TIMEOUT", "180"))
+    LOG_REQUEST_PAYLOAD = os.getenv("ADMIN_LOG_REQUEST_PAYLOAD", "0") == "1"
+    PAYLOAD_MAX_MB = max(1, min(8, int(os.getenv("ADMIN_LOG_PAYLOAD_MAX_MB", "8"))))
+    # Admission waits are short; inference also has an absolute end-to-end deadline.
+    GATEWAY_WAIT_TIMEOUT = max(0.0, min(30.0, float(os.getenv("ADMIN_GATEWAY_WAIT_TIMEOUT", "15"))))
+    # Queueing for a slot is separate from waiting inside the request: the
+    # dispatcher and account selection still need room under peak load, but
+    # must stay well inside the whole-request deadline.
+    GATEWAY_QUEUE_TIMEOUT = max(0.0, min(115.0, float(os.getenv("ADMIN_GATEWAY_QUEUE_TIMEOUT", "90"))))
+    GATEWAY_REQUEST_TIMEOUT = max(1.0, min(120.0, float(os.getenv("ADMIN_GATEWAY_REQUEST_TIMEOUT", "120"))))
+    JOIN_MAX_CONCURRENT = max(1, int(os.getenv("ADMIN_JOIN_MAX_CONCURRENT", "4")))
     GATEWAY_RATE_PER_MINUTE = int(os.getenv("ADMIN_GATEWAY_RATE_PER_MINUTE", "60"))
     GATEWAY_MAX_CONCURRENT = int(os.getenv("ADMIN_GATEWAY_MAX_CONCURRENT", "4"))
     GATEWAY_LIMIT_BACKEND = os.getenv("ADMIN_GATEWAY_LIMIT_BACKEND", "auto").lower()
@@ -114,7 +123,7 @@ class Settings:
     UPSTREAM_CLIENT_NAME = os.getenv("ADMIN_UPSTREAM_CLIENT_NAME", "WorkBuddy")
 
     # Initial automatic strategy; console changes persist in SystemSetting.
-    # expiry_weighted / expiring / lru / weighted / remain / oldest
+    # throughput / expiry_weighted / expiring / lru / weighted / remain / oldest
     ACCOUNT_SELECT = os.getenv("ADMIN_ACCOUNT_SELECT", "expiry_weighted")
 
     # ---------- 开发 / 测试辅助工具 ----------
@@ -188,13 +197,12 @@ class Settings:
     #: 保活/批量任务里账号之间的最小间隔（秒），避免批量请求被识别为机器行为。
     KEEPALIVE_ACCOUNT_GAP = float(os.getenv("ADMIN_KEEPALIVE_ACCOUNT_GAP", "0.8"))
 
-    # ---------- 超时（关键：流式绝不设总时长） ----------
+    # ---------- 上游阶段超时（另有最多 120 秒的网关总时限） ----------
     #: 连接超时（秒）：连不上就快速换号，不让用户干等。
     STREAM_CONNECT_TIMEOUT = float(os.getenv("ADMIN_STREAM_CONNECT_TIMEOUT", "15"))
     #: 流式**静默**超时（秒）：两次数据之间的最大间隔。
-    #: 这是「只要上游在持续吐字，流就永不被我们自己掐断」的关键 ——
-    #: 它约束的是空闲，不是总时长。官方客户端源码里 Node 默认的 300s
-    #: 总时长 requestTimeout 会在流仍活跃时掐断 SSE，是必须避免的坑。
+    #: 它约束的是上游读空闲时间；网关另有 120 秒总时限，覆盖排队、上传、
+    #: 上游处理和客户端接收，避免单个阻塞请求长期占用账号与连接资源。
     STREAM_IDLE_TIMEOUT = float(os.getenv("ADMIN_STREAM_IDLE_TIMEOUT", "180"))
     #: 写入（上传 prompt）超时（秒）。
     STREAM_WRITE_TIMEOUT = float(os.getenv("ADMIN_STREAM_WRITE_TIMEOUT", "60"))

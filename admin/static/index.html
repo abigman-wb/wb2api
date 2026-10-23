@@ -698,7 +698,7 @@
 .upload-result{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg-muted)}
 @media(max-width:480px){.upload-footer{gap:10px}.upload-footer-note{flex-basis:100%;order:3}.upload-file-input::file-selector-button{padding:8px 10px;margin-right:8px}}
   </style>
-  <link rel="stylesheet" href="/static/console.css" />
+  <link rel="stylesheet" href="/static/console.css?v=20261023-invitation-settings-3" />
   <link rel="icon" href="/api/app/icon" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/desktop.css" />
   <script>if(new URLSearchParams(location.search).get('desktop')==='1') document.documentElement.classList.add('desktop-mode');</script>
@@ -923,6 +923,11 @@
             <pre id="shareCurlAudio" class="api-example mt-2 rounded-lg p-3 overflow-x-auto text-[11px] whitespace-pre"></pre>
             <pre id="sharePythonAudio" class="api-example mt-2 rounded-lg p-3 overflow-x-auto text-[11px] whitespace-pre"></pre>
           </details>
+          <details class="text-xs text-slate-500">
+            <summary class="cursor-pointer text-wb select-none">AI 生图 · 文生图 / 图生图（OpenAI 兼容）</summary>
+            <p class="mt-2 leading-relaxed">文生图使用 <code>POST /v1/images/generations</code>，图生图使用 <code>POST /v1/images/edits</code>。指定已启用且有权限的生图模型，例如 <code>hunyuan-image-alpha</code>。图生图支持上传一张 <code>image</code> 文件（最大 20 MiB），也可通过 JSON 传入 <code>image_url</code> 或 base64 <code>image_data</code>。返回格式支持 url（默认）和 b64_json；尺寸、数量和风格以上游模型能力为准，暂不支持 mask、流式或多图输入。调用沿用 Key 限额、模型分组、账号绑定及并发保护，成功后记录真实积分用量。</p>
+            <pre id="sharePythonImages" class="api-example mt-2 rounded-lg p-3 overflow-x-auto text-[11px] whitespace-pre"></pre>
+          </details>
         </div>
       </div>
       <div class="flex flex-wrap justify-between items-center mb-3 gap-2 panel-toolbar">
@@ -965,7 +970,15 @@
         <h3 class="text-sm font-semibold">活跃 IP</h3>
         <div id="ipActivityDaysSlot" class="flex items-center gap-2 text-sm"></div>
       </div>
+      <form id="ipUsageFilters" class="flex flex-wrap items-end gap-2 mb-3" onsubmit="event.preventDefault();WBIP.range()">
+        <label class="text-xs">流量筛选<select id="ipUsageFilter" class="block border rounded-lg px-3 py-2 mt-1" onchange="WBIP.usageFilter()"><option value="">全部流量</option><option value="tokens">高频 · 低 Token</option><option value="credits">高频 · 低积分</option></select></label>
+        <label class="text-xs">至少请求<input id="ipUsageMin" type="number" min="0" max="1000000" value="0" class="block border rounded-lg px-3 py-2 mt-1" style="width:100px"></label>
+        <label id="ipUsageMaxLabel" class="text-xs hidden"><span id="ipUsageMaxText">平均 Token ≤</span><input id="ipUsageMax" type="number" min="0" max="1000000000" value="100" step="any" class="block border rounded-lg px-3 py-2 mt-1" style="width:120px"></label>
+        <label class="text-xs">IP 地址<input id="ipActivityIP" placeholder="全部 IP" maxlength="64" class="block border rounded-lg px-3 py-2 mt-1" style="width:160px"></label>
+        <button type="submit" class="console-btn quiet">筛选</button>
+      </form>
       <p class="text-xs text-slate-400 mb-3">入口次数包含鉴权失败、限流和封禁请求；历史数据从用量日志补充。按小时汇总，时间范围包含起始小时；失败数按 HTTP 状态统计，积分与 Token 来自用量日志。点击表头切换排序。</p>
+      <p class="text-xs text-slate-400 mb-3">低消耗筛选按成功用量记录计算均值，未返回 Token 的请求不作为低消耗。点击 IP 查看用量明细。</p>
       <div id="ipActivitySummary" class="stat-grid mb-3" role="status"></div>
       <div class="card overflow-x-auto"><table class="tbl min-w"><thead><tr>
         <th data-ip-sort="ip"><button type="button" onclick="WBIP.sort('ip')">IP 地址</button></th>
@@ -1166,6 +1179,15 @@
 
       <!-- 按账号查询区：这是「使用记录再新增按账号查询」的入口 -->
       <div class="card p-3 mb-4">
+        <div class="flex flex-wrap gap-3 items-center">
+          <label class="model-switch"><input id="logCaptureEnabled" type="checkbox" role="switch" disabled onchange="WBUsage.setCapture(this.checked)"><span aria-hidden="true"></span>记录请求详情（内存缓存）</label>
+          <button type="button" class="console-btn quiet" onclick="WBUsage.captureStatus()">刷新状态</button>
+          <button type="button" class="console-btn quiet" onclick="WBUsage.clearCache()">清空详情缓存</button>
+        </div>
+        <p id="logCaptureHint" class="text-xs mt-2" style="color:var(--fg-muted)">读取开关状态…</p>
+        <p class="text-xs mt-1" style="color:var(--fg-muted)">开启后记录新请求的入站正文和各次发往上游的实际正文，仅供管理员审核。凭据脱敏，正文可能含完整对话；不写数据库。关闭停止新记录，已有缓存可手动清空。</p>
+      </div>
+      <div class="card p-3 mb-4">
         <div class="flex flex-wrap gap-2 items-end">
           <div class="fld-200">
             <div class="text-[11px] mb-1" style="color:var(--fg-muted)">按账号（窗口内有记录的）</div>
@@ -1231,9 +1253,9 @@
 
       <div class="card overflow-hidden">
         <div class="overflow-x-auto max-h-[60vh]">
-          <table class="tbl" style="min-width:1080px">
+          <table class="tbl" style="min-width:1240px">
             <thead><tr>
-              <th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>Token</th>
+              <th>时间</th><th>客户端 IP</th><th>Key</th><th>账号</th><th>模型</th><th>Token</th>
               <th class="text-right">积分</th><th>耗时</th><th>用途</th><th>结果</th>
             </tr></thead>
             <tbody id="logBody"></tbody>
@@ -1452,13 +1474,29 @@
     </section>
     <!-- 设置面板 -->
     <section id="panel-settings" class="hidden">
-      <h2 class="font-semibold mb-3">管理员设置</h2>
-      <div class="card p-5 max-w-md browser-password-settings">
-        <h3 class="text-sm font-medium mb-3">修改登录密码</h3>
-        <input id="oldPwd" type="password" class="w-full border rounded-lg px-3 py-2 mb-2 text-sm" placeholder="当前密码" />
-        <input id="newPwd" type="password" class="w-full border rounded-lg px-3 py-2 mb-2 text-sm" placeholder="新密码（≥6 位）" />
-        <input id="newPwd2" type="password" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm" placeholder="确认新密码" />
-        <button onclick="changePassword()" class="px-3 py-1.5 rounded-lg btn-primary text-sm">保存新密码</button>
+      <h2 class="settings-title">管理员设置</h2>
+      <div class="settings-section">
+        <h3>WorkBuddy 邀请绑定</h3>
+        <div class="settings-fields">
+          <div class="settings-field">
+            <label for="invitationInput">邀请码 / 邀请链接</label>
+            <input id="invitationInput" maxlength="2048" placeholder="邀请码或 WorkBuddy 官方邀请链接" autocomplete="off" />
+          </div>
+          <div class="settings-actions">
+            <button id="invitationSave" onclick="saveInvitation()" class="console-btn primary"><i class="fa-solid fa-floppy-disk"></i>保存</button>
+            <button onclick="clearInvitation()" class="console-btn">停用</button>
+            <span id="invitationStatus" class="settings-status" role="status"></span>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section browser-password-settings">
+        <h3>修改登录密码</h3>
+        <div class="settings-fields">
+          <div class="settings-field"><label for="oldPwd">当前密码</label><input id="oldPwd" type="password" autocomplete="current-password" /></div>
+          <div class="settings-field"><label for="newPwd">新密码</label><input id="newPwd" type="password" placeholder="至少 6 位" autocomplete="new-password" /></div>
+          <div class="settings-field"><label for="newPwd2">确认新密码</label><input id="newPwd2" type="password" autocomplete="new-password" /></div>
+          <div class="settings-actions"><button onclick="changePassword()" class="console-btn primary"><i class="fa-solid fa-floppy-disk"></i>保存新密码</button></div>
+        </div>
       </div>
 
       <!-- 逆向产物（开发/测试环境工具） -->
@@ -1554,7 +1592,8 @@
 
 <link rel="stylesheet" href="/static/phone-region.css" />
 <script src="/static/phone-session.js"></script>
-<script src="/static/model-metadata.js"></script>
+<script src="/static/model-metadata.js?v=20261023-image-types-2"></script>
+<script src="/static/usage-ip.js"></script>
 <script>
 let _confirmResolve = null;
 
@@ -1739,6 +1778,35 @@ async function api(path, opts = {}) {
   }
   return response;
 }
+async function loadInvitation() {
+  try {
+    const {ok, data} = await safeJson(await api('/api/settings/invitation'));
+    if (!ok) throw new Error(data.detail || '读取邀请设置失败');
+    $('#invitationInput').value = data.invite_code || '';
+    $('#invitationStatus').textContent = data.enabled ? '已启用' : '未启用';
+  } catch (e) { $('#invitationStatus').textContent = e.message; }
+}
+async function saveInvitation() {
+  const btn = $('#invitationSave');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const {ok, data} = await safeJson(await api('/api/settings/invitation', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({value:$('#invitationInput').value})
+    }));
+    if (!ok) throw new Error(typeof data.detail === 'string' ? data.detail : '保存失败');
+    $('#invitationInput').value = data.invite_code || '';
+    $('#invitationStatus').textContent = data.enabled ? '已启用' : '未启用';
+    toast(data.enabled ? '邀请绑定已保存' : '邀请绑定已停用');
+  } catch (e) { toast(e.message, 'err'); }
+  finally { btn.disabled = false; }
+}
+async function clearInvitation() {
+  if ($('#invitationSave').disabled) return;
+  $('#invitationInput').value = '';
+  await saveInvitation();
+}
 async function safeJson(r) {
   /* 容错解析：后端偶发返回非 JSON（如 500 明文）时，避免报 "Unexpected token" 崩溃 */
   const t = await r.text();
@@ -1769,7 +1837,7 @@ function openModal(html, widthClass) {
   $("#modal").classList.remove("hidden");
   $("#modal").classList.add("flex");
 }
-function closeModal() { window.WBPhone?.closeRegion(); window.WBDateTimePicker?.close(); $("#modal").classList.add("hidden"); $("#modal").classList.remove("flex"); }
+function closeModal() { window.WBUsage?.closeDetail(); window.WBPhone?.closeRegion(); window.WBDateTimePicker?.close(); $("#modal").classList.add("hidden"); $("#modal").classList.remove("flex"); if ($('#usageDiagnosticText') || $('#usageDetailLoading')) $('#modalBox').replaceChildren(); }
 async function copyText(sel){
   const source = $(sel); if(!source) return;
   const text = source.value ?? source.textContent ?? '';
@@ -1910,7 +1978,7 @@ function activateTab(name, opts) {
   if (name === "credits") loadCreditStats();
   if (name === "logs") openLogsPanel();
   if (name === "client") loadClientProfile();
-  if (name === "settings") loadAppSource();
+  if (name === "settings") { loadAppSource(); loadInvitation(); }
   if (name === "models") loadModels();
   if (name === "growth") window.WBGrowthCenter?.enter();
   scheduleModelBusy();
@@ -2379,7 +2447,7 @@ function accRow(a) {
         <span class="c-uid" title="${esc(a.uid || "")}">${esc(a.uid || "-")}</span>
         ${a.bound_key_id ? `<small class="text-indigo-600">Key 独占：${esc(a.bound_key_name || ("#" + a.bound_key_id))}</small>` : ''}
         ${a.post_login_automation ? `<small style="color:var(--fg-muted)" title="${esc((a.post_login_automation.result?.errors || []).join('；'))}">${esc(({queued:'自动任务排队中',running:'自动任务执行中',completed:'自动任务已完成',failed:'部分自动任务未完成'})[a.post_login_automation.status] || '')}</small>` : ''}
-          ${a.resource_initialization && a.resource_initialization.status !== 'completed' ? `<small style="color:var(--fg-muted)" title="${esc((a.resource_initialization.errors || []).join('；'))}">${esc(({queued:'余额与模型初始化排队中',running:'正在初始化余额与模型',failed:'初始化未完成，可刷新余额或同步模型',invalid_credential:'账号凭证不完整，请重新导入或授权登录'})[a.resource_initialization.status] || '')}</small>` : ''}
+          ${a.resource_initialization && a.resource_initialization.status !== 'completed' ? `<small style="color:var(--fg-muted)" title="${esc((a.resource_initialization.errors || []).join('；'))}">${esc(({queued:'余额与模型初始化排队中',running:'正在初始化余额与模型',failed:'初始化未完成，可刷新余额或同步模型',invalid_credential:'账号凭证不完整，请重新导入或授权登录',unsupported_region:'国际版凭证无法访问当前国内接口，请更换国内版凭证',auth_required:'上游鉴权失败，请重新授权登录'})[a.resource_initialization.status] || '')}</small>` : ''}
       </div>
     </td>
     <td class="col-status" data-label="状态">${badge(a.status)}${accountLimitBadge(a)}</td>
@@ -4055,7 +4123,8 @@ async function plVerify(){
       $("#plResultIcon").innerHTML = '<i class="fa-solid fa-circle-check text-emerald-500"></i>';
       $("#plResultMsg").innerHTML = `<div class="font-medium text-emerald-700">${esc(data.message || "登录成功")}</div>
         <div class="text-slate-500 mt-1 text-xs">账号：${esc((data.account && data.account.name) || "-")}${data.uid ? " · UID " + esc(data.uid) : ""}</div>
-        ${ck.live_message ? `<div class="text-emerald-600 mt-1 text-xs"><i class="fa-solid fa-shield-halved mr-1"></i>${esc(ck.live_message)}</div>` : ""}`;
+        ${ck.live_message ? `<div class="text-emerald-600 mt-1 text-xs"><i class="fa-solid fa-shield-halved mr-1"></i>${esc(ck.live_message)}</div>` : ""}
+        ${data.invitation && data.invitation.status !== 'disabled' ? `<div class="mt-1 text-xs">${esc(data.invitation.message)}</div>` : ""}`;
       if(_plTimer){ clearInterval(_plTimer); _plTimer = null; }
       loadAccounts();
     } else {
@@ -4431,6 +4500,15 @@ function renderShareAddress(origin) {
     '    result = client.audio.transcriptions.create(model="workbuddy-asr", file=audio)',
     'print(result.text)'
   ].join('\n');
+  if ($('#sharePythonImages')) $('#sharePythonImages').textContent = [
+    'from openai import OpenAI',
+    `client = OpenAI(api_key="<你的 Key>", base_url="${base}")`,
+    'result = client.images.generate(model="hunyuan-image-alpha", prompt="白色背景上的蓝色圆形", n=1)',
+    'print(result.data[0].url)',
+    'with open("input.png", "rb") as image:',
+    '    edited = client.images.edit(model="hunyuan-image-alpha", image=image, prompt="把圆形改成绿色")',
+    'print(edited.data[0].url)'
+  ].join('\n');
   if ($("#shareCurl")) {
     $("#shareCurl").textContent =
       "curl " + base + "/chat/completions \\\n" +
@@ -4760,14 +4838,17 @@ window.addEventListener('pageshow',refreshModelPromotions);
 document.addEventListener('visibilitychange',refreshModelPromotions);
 function modelRow(m) {
   const info=WBModelMetadata.display(m);
+  info.kind=m.model_type||info.kind||(/^hunyuan-image-/i.test(m.model_id||'')?'image':'text');
+  if(info.kind==='image') { info.price=null; info.base=null; }
   const isFree = info.price === 0;
   const mult = info.price;
-  const multDisplay = isFree ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">FREE</span>'
+  const typeTag=`<span class="model-type-tag ${info.kind}" title="${info.kind==='image'?'图片生成模型':'文本输出模型'}"><i class="fa-solid ${info.kind==='image'?'fa-image':'fa-font'}" aria-hidden="true"></i>${info.kind==='image'?'IMAGE':'TEXT'}</span>`;
+  const multDisplay = info.kind==='image' ? '<span class="text-xs text-slate-500" title="按上游返回的 usage.credit 记账">按实际用量</span>' : isFree ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">FREE</span>'
     : `<span class="text-amber-600 font-medium">${mult==null?'未知':'×'+mult.toFixed(2)}</span>`;
   const original=info.discountMode==='strikethrough'&&info.base!=null&&info.base!==mult?`<del class="model-original-price">×${info.base.toFixed(2)}</del>`:'';
   return `
     <tr class="border-t hover:bg-slate-50">
-      <td class="px-4 py-3 font-mono text-xs"><span tabindex="0" class="model-id-description" data-model-tooltip="${esc(m.model_id)}" data-tooltip="${esc(m.model_id)}" data-tooltip-description="${esc(info.description || '上游暂未提供模型描述')}">${esc(m.model_id)}</span><div class="model-promotion-row">${modelPromotionBadges(info)}</div></td>
+      <td class="px-4 py-3 font-mono text-xs"><span tabindex="0" class="model-id-description" data-model-tooltip="${esc(m.model_id)}" data-tooltip="${esc(m.model_id)}" data-tooltip-description="${esc(info.description || '上游暂未提供模型描述')}">${esc(m.model_id)}</span><div class="model-promotion-row">${typeTag}${modelPromotionBadges(info)}</div></td>
       <td class="px-4 py-3">${m.level==='system'?'<span class="px-2 py-0.5 rounded text-[10px] bg-blue-100 text-blue-700">系统</span>':'<span class="px-2 py-0.5 rounded text-[10px] bg-purple-100 text-purple-700">用户</span>'}</td>
       <td class="px-4 py-3 model-mult-column">${original}${multDisplay}</td>
       <td class="px-4 py-3 whitespace-nowrap model-busy-column">${modelBusyBadge(m)}</td>
@@ -4775,7 +4856,7 @@ function modelRow(m) {
       <td class="px-4 py-3 text-slate-400 text-xs">${esc(m.note||'-')}</td>
       <td class="px-4 py-3 col-status">${m.enabled?'<span class="badge bg-emerald-100 text-emerald-700">启用</span>':'<span class="badge bg-slate-100 text-slate-500">禁用</span>'}</td>
       <td class="px-4 py-3 text-right whitespace-nowrap">
-        <button onclick="speedTestModel(${esc(JSON.stringify(m.model_id))}, this)" class="text-sky-600 hover:text-sky-800 text-sm mr-2" title="检测模型延迟与健康（真实请求，可能消耗少量积分）"><i class="fa-solid fa-gauge-high"></i></button>
+        <button onclick="speedTestModel(${esc(JSON.stringify(m.model_id))}, this)" ${info.kind==='image'?'disabled':''} class="text-sky-600 hover:text-sky-800 text-sm mr-2 disabled:opacity-30 disabled:cursor-not-allowed" title="${info.kind==='image'?'图片模型不支持文本测速':'检测模型延迟与健康（真实请求，可能消耗少量积分）'}"><i class="fa-solid fa-gauge-high"></i></button>
         <button onclick="toggleModel(${m.id},${!m.enabled})" class="${m.enabled?'text-amber-600 hover:text-amber-800':'text-emerald-600 hover:text-emerald-800'} text-sm mr-2" title="${m.enabled?'禁用':'启用'}"><i class="fa-solid ${m.enabled?'fa-ban':'fa-check'}"></i></button>
         <button onclick="deleteModelConfig(${m.id})" class="text-red-500 hover:text-red-700" title="移除"><i class="fa-solid fa-trash"></i></button>
       </td>
@@ -5776,9 +5857,13 @@ let _logOpts = { accounts: [] };
 let _logBeforeId = null;      // keyset 游标
 let _logSelReady = false;
 let _logLoadSeq = 0, _logActivityBusy = false;
+let _logListController = null, _logAccountController = null, _logAccountSeq = 0;
+let _logAccountsPromise = null, _logAccountsAt = 0, _logAccountsDays = null;
+const _logTotals = new Map();
 let _logUsageRevision = null, _logUsageDirty = false, _logUsageBusy = false, _logUsageAt = 0;
 let _logActivityEpoch = 0;
 let _logSummaryDirty = true, _logSummaryAt = 0, _logSummaryBusy = false, _logSummarySeq = 0;
+let _logSummaryController = null, _logSummarySignature = '';
 const _logFolded = {activity:false, summary:false};
 function applyLogCard(name) {
   const activity = name === 'activity';
@@ -5814,6 +5899,9 @@ function stopLogActivity() {
 function requestPhaseLabel(phase) {
   if (/gateway_wait_concurrent/.test(phase)) return '等待此 Key 的并发空位';
   if (/gateway_wait_requests_per_minute/.test(phase)) return '等待此 Key 的频率额度';
+  if (/request_timeout/.test(phase)) return '超过总时限已回收';
+  if (/account_capacity_wait/.test(phase)) return '等待账号空位（公平队列）';
+  if (/upstream_dispatch_wait|upstream_queue/.test(phase)) return '等待上游发车';
   if (/send_request_body/.test(phase)) return '上传到上游';
   if (/receive_response_headers/.test(phase)) return '等待上游首响应';
   if (/receive_response_body/.test(phase)) return '接收上游响应';
@@ -5830,6 +5918,7 @@ function requestActivityRow(r, active) {
   const label = active ? requestPhaseLabel(r.phase || '') :
     reason === 'concurrent_requests' ? '并发已满' :
     reason === 'requests_per_minute' ? '频率超限' :
+    reason === 'request_timeout' || r.outcome === 'timeout' ? '超时回收' :
     r.outcome === 'disconnected' ? '客户端提前结束' :
     r.outcome === 'completed' ? '已结束' : r.outcome === 'http_error' ? '请求失败' : '请求中断';
   const color = active || r.outcome === 'disconnected' ? 'var(--warn)' : r.outcome === 'completed' ? 'var(--ok)' : 'var(--danger)';
@@ -5839,7 +5928,7 @@ function requestActivityRow(r, active) {
     ? `<span data-start="${esc(r.started_at || '')}">${(Number(r.elapsed_ms || 0)/1000).toFixed(1)}s</span>`
     : `${(Number(r.elapsed_ms || 0)/1000).toFixed(1)}s`;
   return `<tr><td class="text-xs whitespace-nowrap">${fmtTime(r.started_at)}</td>
-    <td class="text-xs">${esc(r.key_name || '—')}</td><td class="text-xs">${r.account_name ? `<span class="badge bg-indigo-100 text-indigo-700">${esc(r.account_name)}</span>` : '—'}</td><td class="font-mono text-xs">${esc(r.model || '尚未读取模型')}</td>
+    <td class="text-xs font-mono">${WBUsage.ipCell(r.client_ip)}</td><td class="text-xs">${esc(r.key_name || '—')}</td><td class="text-xs">${r.account_name ? `<span class="badge bg-indigo-100 text-indigo-700">${esc(r.account_name)}</span>` : '—'}</td><td class="font-mono text-xs">${esc(r.model || '尚未读取模型')}</td>
     <td class="text-xs whitespace-nowrap" style="color:${color}" title="${esc(r.outcome === 'disconnected' ? '客户端在完整响应结束前关闭连接；HTTP 200 仅表示响应头已发送，并非上游报错。' : reason)}">${esc(label)}${!active && r.status ? ' · HTTP '+Number(r.status) : ''}</td>
     <td class="text-xs whitespace-nowrap">${elapsed}</td>
     <td class="text-xs">${Number(r.upstream_attempts || 0)} 次</td><td class="text-xs font-mono" title="${esc(r.path || '')}">${esc((r.request_id || '').slice(0,12))}</td></tr>`;
@@ -5999,7 +6088,7 @@ function renderRequestActivity(data) {
       + (data.degraded ? ' · 数据源暂时不可用' : '') + ` · ${new Date().toLocaleTimeString()}`;
   }
   const html = active.length || recent.length
-    ? `<table class="tbl" style="min-width:900px"><thead><tr><th>开始时间</th><th>Key</th><th>使用账号</th><th>模型</th><th>状态 / 当前阶段</th><th>已耗时</th><th>上游尝试</th><th>请求编号</th></tr></thead><tbody>${active.map(x=>requestActivityRow(x,true)).join('')}${recent.map(x=>requestActivityRow(x,false)).join('')}</tbody></table>`
+    ? `<table class="tbl" style="min-width:900px"><thead><tr><th>开始时间</th><th>客户端 IP</th><th>Key</th><th>使用账号</th><th>模型</th><th>状态 / 当前阶段</th><th>已耗时</th><th>上游尝试</th><th>请求编号</th></tr></thead><tbody>${active.map(x=>requestActivityRow(x,true)).join('')}${recent.map(x=>requestActivityRow(x,false)).join('')}</tbody></table>`
     : '<div class="empty">当前没有在途请求或近期请求结果。结束记录从此功能启用后开始保存。</div>';
   // 只在内容真的变了才写 DOM：每帧重建整张表会让滚动条一直跳。
   if (box.dataset.sig !== html) {
@@ -6048,20 +6137,29 @@ function initLogSelects() {
       { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" },
       { value: "0", label: "不限时间" },
     ],
-    onChange: () => { loadLogAccounts(); loadLogSummary(); loadLogs(1); },
+    onChange: () => { _logBeforeId = null; loadLogAccounts(true).then(() => loadLogs(1)); },
   });
   _logSelReady = true;
 }
 
 /** 按账号下拉：选项来自 /api/logs/accounts（窗口内有记录的账号）。 */
-async function loadLogAccounts() {
+function loadLogAccounts(force = false) {
   const days = parseInt(uiSelectValue("logDaysSel") || "1", 10) || 1;
+  if (_logAccountsPromise && _logAccountsDays === days) return _logAccountsPromise;
+  if (!force && _logAccountsDays === days && Date.now() - _logAccountsAt < 5000) return Promise.resolve();
+  if (_logAccountController) _logAccountController.abort();
+  const seq = ++_logAccountSeq;
+  const controller = new AbortController();
+  _logAccountController = controller;
+  _logAccountsDays = days;
+  const task = (async () => {
   let items = [];
   try {
-    const r = await api(`/api/logs/accounts?days=${days}`);
+    const r = await api(`/api/logs/accounts?days=${days}`, {signal:controller.signal});
     const { ok, data } = await safeJson(r);
     if (ok) items = data.items || [];
-  } catch (e) { /* 选项拉取失败不阻塞列表 */ }
+  } catch (e) { if (e && e.name === 'AbortError') return; /* 选项拉取失败不阻塞列表 */ }
+  if (seq !== _logAccountSeq) return;
   _logOpts.accounts = items;
 
   const cur = uiSelectValue("logAccountSel") || "";
@@ -6080,6 +6178,15 @@ async function loadLogAccounts() {
       onChange: () => loadLogs(1),
     });
   }
+  })();
+  _logAccountsPromise = task.finally(() => {
+    if (seq === _logAccountSeq) {
+      _logAccountController = null;
+      _logAccountsPromise = null;
+      _logAccountsAt = Date.now();
+    }
+  });
+  return _logAccountsPromise;
 }
 
 /** 当前筛选 → query string，并生成一句人话提示。 */
@@ -6103,7 +6210,7 @@ function _logQuery() {
   if (start) p.set("start", start + " 00:00:00");
   else if (days > 0) {
     const d0 = new Date(Date.now() - days * 86400000);
-    p.set("start", d0.toISOString().slice(0, 19).replace("T", " "));
+    p.set("start", d0.toISOString());
   }
   if (end) p.set("end", end + " 23:59:59");
   if (fast) {
@@ -6125,6 +6232,9 @@ function _logQuery() {
 
 async function loadLogs(page, silent = false) {
   const loadSeq = ++_logLoadSeq;
+  if (_logListController) _logListController.abort();
+  const controller = new AbortController();
+  _logListController = controller;
   initLogSelects();
   if (!_logSelReady) return;
   if (!_logOpts.accounts.length) await loadLogAccounts();
@@ -6136,7 +6246,10 @@ async function loadLogs(page, silent = false) {
   const filterSignature = logFilterSignature();
   const revision = _logUsageRevision;
   const params = new URLSearchParams(qs);
-  if (silent) params.set('with_total', 'false');
+  const fast = Boolean($("#logFastMode") && $("#logFastMode").checked);
+  const cachedStats = !fast ? _logTotals.get(filterSignature) : null;
+  const useCachedStats = cachedStats && Date.now() - cachedStats.at < 5000;
+  if (silent || fast || useCachedStats) params.set('with_total', 'false');
   const hint = $("#logFilterHint");
   if (hint) {
     if (conds.length) {
@@ -6146,30 +6259,39 @@ async function loadLogs(page, silent = false) {
   }
 
   const body = $("#logBody");
-  if (body && !silent) body.innerHTML = `<tr><td colspan="9" class="px-4 py-8 text-center" style="color:var(--fg-subtle)">加载中...</td></tr>`;
+  if (body && !silent) body.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center" style="color:var(--fg-subtle)">加载中...</td></tr>`;
   let d;
   try {
-    const r = await api("/api/logs?" + params);
+    const r = await api("/api/logs?" + params, {signal:controller.signal});
     const { ok, data } = await safeJson(r);
     if (loadSeq !== _logLoadSeq || filterSignature !== logFilterSignature()) return;
     if (!ok) {
-      if (body && !silent) body.innerHTML = `<tr><td colspan="9" class="px-4 py-8 text-center text-red-500">加载失败：${esc(data.detail || "")}</td></tr>`;
+      if (body && !silent) body.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center text-red-500">加载失败：${esc(data.detail || "")}</td></tr>`;
       return;
     }
     d = data;
+    if (d.total != null && d.stats && !fast) {
+      _logTotals.set(filterSignature, {at:Date.now(), total:d.total, stats:d.stats});
+      if (_logTotals.size > 32) _logTotals.delete(_logTotals.keys().next().value);
+    } else if (useCachedStats && !silent) {
+      d.total = cachedStats.total;
+      d.stats = cachedStats.stats;
+    }
   } catch (e) {
+    if (e && e.name === 'AbortError') return;
     if (loadSeq !== _logLoadSeq) return;
-    if (body && !silent) body.innerHTML = `<tr><td colspan="9" class="px-4 py-8 text-center text-red-500">加载异常：${esc(String(e && e.message || e))}</td></tr>`;
+    if (body && !silent) body.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center text-red-500">加载异常：${esc(String(e && e.message || e))}</td></tr>`;
     return;
+  } finally {
+    if (loadSeq === _logLoadSeq) _logListController = null;
   }
   fillLogFilterOptions();
   const stats = d.stats;
   if (revision === _logUsageRevision) _logUsageDirty = false;
   _logUsageAt = Date.now();
   $('#logStats').textContent = stats ? `当前筛选 · 共 ${stats.total} 次 · 成功 ${stats.success} 次 · 错误 ${stats.error} 次` : silent ? '用量记录已实时更新 · 总数统计请点击查询' : '快速翻页未统计总数';
-  if (_logPage === 1 && !silent) loadLogSummary();
+  if (_logPage === 1 && !silent) { loadLogSummary(); }
 
-  const fast = $("#logFastMode") ? $("#logFastMode").checked : false;
   const total = d.total;              // null = 本次未统计
   const totalPages = total != null
     ? Math.max(1, Math.ceil(total / _logPageSize))
@@ -6178,7 +6300,7 @@ async function loadLogs(page, silent = false) {
   if (fast && d.next_before_id) _logBeforeId = d.next_before_id;
 
   $("#logBody").innerHTML = (d.items||[]).map(logRow).join("") ||
-    `<tr><td colspan="9"><div class="empty">${
+    `<tr><td colspan="10"><div class="empty">${
       conds.length ? "当前筛选条件下没有记录，试试放宽时间范围或清除筛选" : "还没有请求记录（代理产生调用后这里会出现）"
     }</div></td></tr>`;
 
@@ -6223,6 +6345,7 @@ function logRow(l) {
     : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="${esc(l.error_kind||'')}">${esc((l.error_kind||'失败').slice(0,6))}</span>`;
   return `<tr title="IP: ${esc(l.client_ip||'—')} | Seq: ${l.seq||'—'}">
     <td class="text-xs whitespace-nowrap tnum" style="color:var(--fg-subtle)">${fmtTime(l.created_at)}</td>
+    <td class="text-xs font-mono">${WBUsage.ipCell(l.client_ip)}</td>
     <td class="text-xs font-mono" title="${esc(l.key_name)}">${esc((l.key_name||'').slice(0,10))}</td>
     <td class="text-xs" title="${esc(l.account_name)}">${esc((l.account_name||'').slice(0,14))}</td>
     <td class="font-mono text-[11px] whitespace-nowrap" title="${esc(l.model)}">${esc((l.model||'').slice(0,24))}<small class="block mt-1" style="color:var(--fg-muted)" title="客户端请求的思考强度；空值表示请求未指定或历史日志未记录">思考：${esc(l.reasoning_effort || '默认 / 未记录')}</small></td>
@@ -6246,15 +6369,22 @@ function renderMobileRuntime(d) {
     ${(d.event_loop_stalls || []).map(s => `<details><summary>停顿采样：${(Number(s.paused_ms)/1000).toFixed(3)} 秒 · 期间进程 CPU ${(Number(s.process_cpu_ms)/1000).toFixed(3)} 秒</summary><pre class="whitespace-pre-wrap break-all">${esc((s.stack || []).join('\n'))}</pre></details>`).join('')}</div>`;
 }
 
+let _usageDetailSeq = 0;
 async function openUsageDetail(id) {
+  WBUsage.closeDetail();
+  const seq = ++_usageDetailSeq;
+  openModal('<p id="usageDetailLoading">正在读取调用详情…</p>', 'max-w-3xl');
   try {
     const response = await api('/api/logs/' + Number(id));
     const {ok, data} = await safeJson(response);
-    if (!ok) { toast(data.detail || '读取详情失败', 'err'); return; }
+    if (seq !== _usageDetailSeq || !$('#usageDetailLoading') || $('#modal').classList.contains('hidden')) return;
+    if (!ok) { closeModal(); toast(data.detail || '读取详情失败', 'err'); return; }
     const d = data.diagnostic;
     const json = d ? JSON.stringify(d, null, 2) : '这条历史记录没有保存请求详情，无法恢复当时的上游响应。';
     openModal(`<h3 class="font-semibold text-lg mb-3">调用详情 · ${esc(data.model)}</h3>
       <p>账号：${esc(data.account_name)} · 网关分类：${esc(data.error_kind || '未记录')}</p>
+      <p>客户端 IP：<span class="font-mono">${esc(data.client_ip || '未记录')}</span></p>
+      ${WBUsage.payloadHtml(data)}
       ${d?.gateway_error ? `<div class="limit-note"><p>网关本地拒绝（未请求上游）：</p><pre class="whitespace-pre-wrap break-all">${esc(d.gateway_error)}</pre></div>` : ""}
       ${d?.diagnostic_truncated ? '<p class="limit-note">诊断内容过长，部分消息已截断。</p>' : ''}
       ${renderMobileRuntime(d)}
@@ -6263,34 +6393,41 @@ async function openUsageDetail(id) {
       ${(d.network_errors || []).map(e => `<div class="limit-note"><p>本地网络异常 · 账号 #${Number(e.account_id) || '—'} · ${esc(e.phase || '')}</p><pre class="whitespace-pre-wrap break-all">${esc(e.message)}</pre><p>${e.http_status ? '已收到上游 HTTP ' + Number(e.http_status) + '，随后传输中断。' : '未收到响应，没有可展示的上游 HTTP / code / msg。'}</p></div>`).join('')}
       ${d.connection_recoveries ? `<p>已尝试新连接恢复：${Number(d.connection_recoveries)} 次</p>` : ''}` : ''}
       <details class="mt-3"><summary>完整诊断 JSON</summary><pre class="whitespace-pre-wrap break-all text-xs">${esc(json)}</pre></details>
-      <textarea id="usageDiagnosticText" hidden></textarea><div class="flex gap-2 mt-3"><button class="console-btn quiet" onclick="copyText('#usageDiagnosticText')">复制详情</button><button class="console-btn quiet" onclick="closeModal()">关闭</button></div>`, 'max-w-3xl');
+      <textarea id="usageDiagnosticText" hidden></textarea><div class="flex gap-2 mt-3"><button class="console-btn quiet" onclick="copyText('#usageDiagnosticText')">复制摘要</button><button class="console-btn quiet" onclick="WBUsage.download()">下载完整 JSONL</button><button class="console-btn quiet" onclick="closeModal()">关闭</button></div>`, 'max-w-3xl');
     document.getElementById('usageDiagnosticText').value = JSON.stringify(data, null, 2);
-  } catch (error) { toast('读取详情失败', 'err'); }
+  } catch (error) { if (seq === _usageDetailSeq && $('#usageDetailLoading')) { closeModal(); toast('读取详情失败', 'err'); } }
 }
 
 /** 按账号汇总表：回答「这个号用了多少」，不用翻几十页去数。 */
 async function loadLogSummary(silent = false) {
   const box = $("#logSummary");
   const hint = $("#logSummaryHint");
-  _logSummaryDirty = true;
   if (!box || _logFolded.summary || (silent && _logSummaryBusy)) return;
-  const seq = ++_logSummarySeq;
   const filterSignature = logFilterSignature();
+  if (!_logSummaryDirty && filterSignature === _logSummarySignature && Date.now() - _logSummaryAt < 30000) return;
+  const seq = ++_logSummarySeq;
+  const usageRevision = _logUsageRevision;
+  if (_logSummaryController) _logSummaryController.abort();
+  const controller = new AbortController();
+  _logSummaryController = controller;
   _logSummaryBusy = true;
-  _logSummaryAt = Date.now();
-  const days = parseInt(uiSelectValue("logDaysSel") || "1", 10) || 1;
+  const parsedDays = parseInt(uiSelectValue("logDaysSel") || "1", 10);
+  const days = Number.isFinite(parsedDays) ? parsedDays : 1;
   const accountId = uiSelectValue("logAccountSel") || "";
   if (!silent) box.innerHTML = `<div class="fs-12 py-3" style="color:var(--fg-subtle)">加载中...</div>`;
   try {
     const filters = new URLSearchParams(_logQuery().qs);
     ['page','page_size','before_id','with_total'].forEach(k => filters.delete(k));
-    filters.set('days', '0');
-    const r = await api('/api/logs/summary?' + filters);
+    if (!$('#logStart')?.value) filters.delete('start');
+    filters.set('days', $('#logStart')?.value ? '0' : String(days));
+    const r = await api('/api/logs/summary?' + filters, {signal:controller.signal});
     const { ok, data } = await safeJson(r);
     if (seq !== _logSummarySeq || filterSignature !== logFilterSignature() || _logFolded.summary) return;
     if (!ok) { box.innerHTML = `<div class="empty">加载失败：${esc(data.detail || "")}</div>`; return; }
     const items = data.items || [];
-    _logSummaryDirty = false;
+    if (usageRevision === _logUsageRevision) _logSummaryDirty = false;
+    _logSummarySignature = filterSignature;
+    _logSummaryAt = Date.now();
     if (hint) hint.textContent = `当前筛选 · ${data.account_count} 个账号 · 成功 ${data.ok_requests} / 错误 ${data.failed_requests} · ${fmtCredit(data.total_credits)} 积分${data.unattributed_requests ? ` · ${data.unattributed_requests} 次未记录账号 / 未选号` : ""}`;
     if (!items.length) { box.innerHTML = `<div class="empty">该时间范围内没有账号产生请求。</div>`; return; }
     const maxC = Math.max(1, ...items.map(x => x.credits));
@@ -6311,8 +6448,13 @@ async function loadLogSummary(silent = false) {
           <td><div class="pkg-track" style="margin:0"><i style="width:${Math.max(2, x.credits/maxC*100)}%"></i></div></td>
         </tr>`).join("")}</tbody></table>`;
   } catch (e) {
-    if (!silent && seq === _logSummarySeq) box.innerHTML = `<div class="empty">加载异常：${esc(String(e && e.message || e))}</div>`;
-  } finally { if (seq === _logSummarySeq) _logSummaryBusy = false; }
+    if (!(e && e.name === 'AbortError') && !silent && seq === _logSummarySeq) box.innerHTML = `<div class="empty">加载异常：${esc(String(e && e.message || e))}</div>`;
+  } finally {
+    if (seq === _logSummarySeq) {
+      _logSummaryBusy = false;
+      _logSummaryController = null;
+    }
+  }
 }
 
 function resetLogFilters() {
@@ -6320,15 +6462,16 @@ function resetLogFilters() {
   uiSelectSet("logAccountSel", "");
   uiSelectSet("logDaysSel", "1");
   ["logModel", "logKey", "logIp", "logStart", "logEnd", "logResult"].forEach(id => {
-    const el = document.getElementById(id); if (el) { el.value = ""; el.dispatchEvent(new Event('change', {bubbles:true})); }
+    const el = document.getElementById(id); if (el) el.value = "";
   });
   const f = $("#logFastMode"); if (f) f.checked = false;
   _logBeforeId = null;
-  loadLogAccounts().then(() => { loadLogSummary(); loadLogs(1); });
+  loadLogAccounts(true).then(() => loadLogs(1));
 }
 
 /** 进入日志面板时恢复折叠状态，后台只做轻量增量检查。 */
 function openLogsPanel() {
+  WBUsage.captureStatus();
   stopLogActivity();
   _logUsageRevision = null;
   _logUsageDirty = false;

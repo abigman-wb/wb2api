@@ -5,6 +5,7 @@ from admin.models import SystemSetting
 SELECTION_KEY = 'account_selection_mode'
 INTERVAL_KEY = 'upstream_start_interval_ms'
 SELECTION_MODES = (
+    ('throughput', '吞吐优先', '优先选择并发占用比例最低的健康账号；会话粘性只在同负载账号间保留，兼顾到期积分。适合多人共享 Key。'),
     ('expiry_weighted', '到期排名加权', '按到期先后赋予 1/排名的权重；同到期时间等权，所有健康账号均有机会，繁忙账号适当降低权重。'),
     ('expiring', '严格到期优先', '先用最早到期的健康账号；同到期时间内优先空闲且最久未用的账号。'),
     ('lru', '均衡轮转', '优先在途最少、最久未用的健康账号，均匀分摊新会话。'),

@@ -7,10 +7,10 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from admin.config import settings
-from admin.db import SessionLocal, init_db, wait_database_ready
+from admin.db import SessionLocal, get_db, init_db, wait_database_ready
 from admin.models import SystemSetting
 from admin.routers import (accounts, credits, groups,
                            growth, keys, login as login_router, logs, models,
@@ -27,6 +27,7 @@ from admin.gateway_limits import GatewayAdmissionMiddleware
 from admin.ip_access import IPBlockMiddleware
 from admin.routers import releases
 from admin.routers import audio
+from admin.routers import images
 from admin.routers import growth_center
 from admin.routers import benefits
 from admin.routers import ip_management
@@ -34,6 +35,10 @@ from admin import credit_journal  # register transactional balance observations
 from admin.routers import maintenance
 
 logger = logging.getLogger("admin.server")
+
+
+class InvitationSettingIn(BaseModel):
+    value: str = Field(max_length=2048)
 
 
 def _ensure_admin_logging() -> None:
@@ -89,6 +94,21 @@ app = FastAPI(title="WorkBuddy 共享管理后台", version="1.0",
               redoc_url="/redoc" if settings.ENABLE_DOCS else None,
               openapi_url="/openapi.json" if settings.ENABLE_DOCS else None)
 
+@app.get("/api/settings/invitation")
+def get_invitation_setting(_: bool = Depends(require_admin), db=Depends(get_db)):
+    from admin.invitation import current
+    return current(db)
+
+
+@app.put("/api/settings/invitation")
+def put_invitation_setting(body: InvitationSettingIn, _: bool = Depends(require_admin), db=Depends(get_db)):
+    from admin.invitation import save
+    try:
+        return save(body.value, db)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+
+
 # CORS：共享网关以 Authorization 头鉴权、不使用 Cookie，故关闭 credentials；
 # 避免 `allow_origins=["*"] + allow_credentials=True` 的危险组合。
 app.add_middleware(
@@ -112,7 +132,13 @@ async def _security_headers(request: Request, call_next):
     return response
 
 
-app.add_middleware(GatewayAdmissionMiddleware, wait_timeout=getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 180))
+app.add_middleware(
+    GatewayAdmissionMiddleware,
+    wait_timeout=getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 15),
+    request_timeout=getattr(settings, 'GATEWAY_REQUEST_TIMEOUT', 120),
+)
+from admin.join_limits import JoinAdmissionMiddleware
+app.add_middleware(JoinAdmissionMiddleware, max_active=settings.JOIN_MAX_CONCURRENT)
 
 from admin.request_metrics import TimingMiddleware
 app.add_middleware(TimingMiddleware, persist=True)
@@ -151,6 +177,7 @@ app.include_router(keys.router)
 app.include_router(models.router)
 app.include_router(proxy.router)
 app.include_router(audio.router)
+app.include_router(images.router)
 app.include_router(sync.router)
 app.include_router(schedules.router)
 app.include_router(logs.router)

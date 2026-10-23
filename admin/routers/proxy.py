@@ -44,7 +44,7 @@ HTTP_LIMITS = backend.HTTP_LIMITS
 
 
 def _stream_timeout() -> httpx.Timeout:
-    """流式请求的超时：不设总时长上限，只分别约束「连接 / 静默 / 上传 / 取连接」。
+    """Set phase-specific upstream timeouts; the ASGI gateway adds an overall deadline.
 
     先澄清一个容易搞错的点：`httpx.AsyncClient(timeout=300)` **不是**总时长 5 分钟，
     它把 connect/read/write/pool 四项**各**设为 300s。所以原代码并不会在流式
@@ -70,13 +70,12 @@ def _stream_timeout() -> httpx.Timeout:
     到点强行掐断长连接 SSE，客户端只看到 undici `TypeError: terminated` /
     "SSE stream disconnected"。官方把它当必须修的 bug，修法就是「总时长 = 0」。
 
-    教训迁移到我们这边：**永远不要给流式响应加总时长上限**。所以这里显式拆开
-    四项，只让 read 承担「静默多久算死」的职责，不给整个响应设 deadline。
+    这里仍将四项分别配置，让 read 表示上游静默多久算失败。请求整体还有
+    GatewayAdmissionMiddleware 的绝对时限，覆盖排队、上传、上游处理与客户端接收。
 
     这里的 read 实际就等价于参考实现 internal/upstream/idle.go 的空闲监控
     （有数据就续期、静默即取消），而且不需要额外起监控任务。因此**非流式端点
-    也用这一套**：上游一律以 `stream: true` 返回 SSE，我们在内部聚合，
-    用静默上限而不是总时长，长推理才不会被自己掐断。
+    也用这一套**：上游一律以 `stream: true` 返回 SSE，我们在内部聚合。
     """
     return httpx.Timeout(
         connect=settings.STREAM_CONNECT_TIMEOUT,
@@ -465,6 +464,13 @@ def _record_usage(key_id: int, account_id: int, model: str, credits: float | Non
             db.add(log)
             db.commit()
             log_id = log.id
+            # Commit accounting first. Optional content must never roll back a
+            # debit or trigger inference retries if caching fails.
+            try:
+                from admin.request_payload import store
+                store(log_id)
+            except Exception:
+                _logger.warning("Request content cache failed for usage %s", log_id)
             if estimated and account_id and updated_auth_json:
                 threading.Thread(
                     target=_fetch_real_credits,
@@ -1685,46 +1691,66 @@ async def _prepare_stream_response(source, anthropic=False):
 
 
 async def _select_account_with_wait(db, **kwargs):
-    try:
-        deadline = time.monotonic() + max(1, getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 180))
-        while True:
-            if kwargs.get('key_id') is not None:
-                await _blocking_call(check_key_current, kwargs['key_id'])
-            account = await _blocking_call(_select_account, db, **kwargs)
-            if account is not None or POOL.waf.active() or time.monotonic() >= deadline:
-                return account
+    from admin.capacity_queue import current_queue
+    started = time.monotonic()
+    timeout = max(0, getattr(settings, 'GATEWAY_QUEUE_TIMEOUT', 90))
 
-            def temporarily_busy():
-                now = datetime.utcnow()
-                query = scope_accounts(db.query(Account), kwargs.get("account_id"), kwargs.get("key_id"))
-                excluded = kwargs.get("exclude_ids")
-                if excluded:
-                    query = query.filter(~Account.id.in_(excluded))
-                for row in query.filter(Account.status == "active").all():
-                    if not row.balance_remain and not db.query(ModelConfig).filter(
-                            ModelConfig.model_id == kwargs.get("model"), ModelConfig.credit_multiplier == 0).first():
-                        continue
-                    if _looks_login_dead(row, now):
-                        continue
-                    timers = [getattr(row, field) for field in ("cool_until", "breaker_until", "degrade_until")]
-                    limit = db.query(AccountModelCooldown).filter(
-                        AccountModelCooldown.account_id == row.id, AccountModelCooldown.model == kwargs.get("model"),
-                        AccountModelCooldown.until > now).first()
-                    if limit:
-                        timers.append(limit.until)
-                    if any(timer and (timer - now).total_seconds() > deadline - time.monotonic() for timer in timers):
-                        continue
-                    if POOL.inflight.full(row.uid or "", POOL.limit_for(row)) or any(timer and timer > now for timer in timers):
-                        return True
-                return False
-            if not await _blocking_call(temporarily_busy):
-                # A lease can be released between selection and this check.
-                await _blocking_call(db.rollback)
-                return await _blocking_call(_select_account, db, **kwargs)
-            await _blocking_call(db.rollback)
-            await asyncio.sleep(min(.5, max(0, deadline - time.monotonic())))
+    def attempt():
+        leased = None
+        try:
+            if POOL.waf.active():
+                return None, False
+            if kwargs.get('key_id') is not None:
+                check_key_current(kwargs['key_id'])
+            account = _select_account(db, **kwargs)
+            if account is not None and POOL.acquire_account(account):
+                leased = account
+                return account, False
+            if POOL.waf.active():
+                return None, False
+            now = datetime.utcnow()
+            query = scope_accounts(db.query(Account), kwargs.get('account_id'), kwargs.get('key_id'))
+            if kwargs.get('exclude_ids'):
+                query = query.filter(~Account.id.in_(kwargs['exclude_ids']))
+            config = db.query(ModelConfig).filter(
+                ModelConfig.model_id == kwargs.get('model'), ModelConfig.level == 'system').first()
+            free = kwargs.get('min_balance', 1) <= 0 or (config is not None and config.credit_multiplier == 0
+                and not model_metadata.is_image_model(kwargs.get('model')))
+            limits = dict(db.query(AccountModelCooldown.account_id, AccountModelCooldown.until).filter(
+                AccountModelCooldown.model == kwargs.get('model'), AccountModelCooldown.until > now).all())
+            remaining = timeout - (time.monotonic() - started)
+            for row in query.populate_existing().filter(Account.status == 'active').all():
+                if (not free and not row.balance_remain) or _looks_login_dead(row, now):
+                    continue
+                timers = [getattr(row, field) for field in ('cool_until', 'breaker_until', 'degrade_until')]
+                timers.append(limits.get(row.id))
+                if any(timer and (timer - now).total_seconds() > remaining for timer in timers):
+                    continue
+                return None, True
+            return None, False
+        finally:
+            try:
+                release_connection(db)
+            except BaseException:
+                if leased is not None:
+                    POOL.release(leased.uid or '')
+                raise
+
+    def cancelled(result):
+        if result and result[0] is not None:
+            POOL.release(result[0].uid or '')
+
+    async def select():
+        result = await _blocking_call(attempt, on_cancel=cancelled)
+        request_metrics.set_phase('account_capacity_wait')
+        return result
+
+    try:
+        request_metrics.set_phase('account_capacity_wait')
+        return await current_queue().run(kwargs.get('key_id'), select, timeout,
+            scope=(kwargs.get('account_id'), kwargs.get('model'), frozenset(kwargs.get('exclude_ids') or ())))
     finally:
-        await _blocking_call(release_connection, db)
+        request_metrics.add_stage('account_queue_wait', (time.monotonic() - started) * 1000)
 
 
 async def _request_json(request):
@@ -1733,6 +1759,11 @@ async def _request_json(request):
     with request_metrics.measure('read_request_body'):
         try:
             payload = await request.json()
+            try:
+                from admin.request_payload import capture
+                capture(request.headers, await request.body())
+            except Exception:
+                _logger.warning('Optional ingress request capture failed')
             record = request_metrics.current.get()
             if record is not None and isinstance(payload, dict):
                 model = payload.get('model')
@@ -1886,10 +1917,10 @@ def _select_account(db: Session, exclude_ids: set | None = None,
     free_model = False
     if model and min_balance > 0:
         config = db.query(ModelConfig).filter(ModelConfig.model_id == model, ModelConfig.level == "system").first()
-        if config is not None and config.credit_multiplier == 0:
+        if config is not None and config.credit_multiplier == 0 and not model_metadata.is_image_model(model):
             free_model = True
             min_balance = 0
-    q = db.query(Account).filter(Account.status == "active")
+    q = db.query(Account).populate_existing().filter(Account.status == "active")
     q = scope_accounts(q, account_id, key_id)
     if min_balance > 0:
         q = q.filter(Account.balance_remain > 0)
@@ -1958,7 +1989,15 @@ def _select_account(db: Session, exclude_ids: set | None = None,
     if priority != float('inf'):
         rows = [a for a in rows if manual_priority(a) == priority]
 
-    # -- 第一层：会话粘性（命中即定，优先于自动均衡策略）------------------
+    strategy = routing_policy.selection_mode(db)
+    if strategy == 'throughput':
+        # Read each load once: releases from other threads must not change the
+        # minimum between ranking and filtering and leave an empty shortlist.
+        loads = {a.id: POOL.inflight.count(a.uid or '') / max(1, POOL.limit_for(a)) for a in rows}
+        lowest = min(loads.values())
+        rows = [a for a in rows if loads[a.id] == lowest]
+
+    # Keep cache affinity among equally loaded accounts in throughput mode.
     if sticky_key:
         bound = POOL.sticky.resolve(sticky_key, {a.uid or "" for a in rows})
         if bound:
@@ -1969,7 +2008,6 @@ def _select_account(db: Session, exclude_ids: set | None = None,
                     hit.last_picked_at = now
                 return hit
 
-    strategy = routing_policy.selection_mode(db)
     candidates = rows
     if not free_model and strategy == 'expiring':
         best = min(pool.expiry_key(a, now) for a in candidates)
@@ -1980,7 +2018,10 @@ def _select_account(db: Session, exclude_ids: set | None = None,
     POOL.recent.prune()
     load_key = lambda a: (POOL.inflight.count(a.uid or ''),
                           a.last_used_at or datetime.min, a.id)
-    if free_model or strategy in ('lru', 'expiring'):
+    if strategy == 'throughput':
+        acc = min(candidates, key=load_key) if free_model else min(
+            candidates, key=lambda a: (pool.expiry_key(a, now), *load_key(a)))
+    elif free_model or strategy in ('lru', 'expiring'):
         acc = min(candidates, key=load_key)
     elif strategy == 'expiry_weighted':
         acc = pool.expiry_weighted_pick(candidates, inflight=POOL.inflight, now=now)
@@ -2103,6 +2144,7 @@ def _pick_best_model(db: Session, requested_model: str,
     # auto 模式：有配置时免费优先，无配置也从后端取模型列表自选（绝不透传 auto）
     if allowed is not None:
         # 分组内：免费优先，否则任意组内模型
+        allowed = {mid for mid in allowed if not model_metadata.is_image_model(mid)}
         free_in_group = _get_free_models(db) & allowed
         if free_in_group:
             return sorted(free_in_group)[0]
@@ -2125,12 +2167,12 @@ def _pick_best_model(db: Session, requested_model: str,
             pass
         return "deepseek-v4-flash"  # 兜底：无配置且后端不可达时用默认模型
 
-    free_models = _get_free_models(db)
+    free_models = {mid for mid in _get_free_models(db) if not model_metadata.is_image_model(mid)}
     if free_models:
         return list(free_models)[0]  # 取第一个免费模型
 
     # 无免费模型：取任意一个启用的
-    enabled = _get_enabled_models(db)
+    enabled = {mid for mid in _get_enabled_models(db) if not model_metadata.is_image_model(mid)}
     if enabled:
         return list(enabled)[0]
 
@@ -2145,8 +2187,8 @@ def _candidate_models(db: Session, tried: set, allowed: set[str] | None = None) 
     """
     from admin.routers.models import _get_enabled_models, _get_free_models
 
-    free = _get_free_models(db) - tried
-    paid = (_get_enabled_models(db) - free) - tried
+    free = {mid for mid in _get_free_models(db) - tried if not model_metadata.is_image_model(mid)}
+    paid = {mid for mid in (_get_enabled_models(db) - free) - tried if not model_metadata.is_image_model(mid)}
     if allowed is not None:
         free &= allowed
         paid &= allowed
@@ -2507,10 +2549,7 @@ async def chat_completions(
                         if not acc_i:
                             break
                         tried_accounts += 1
-                        # 在途租约：占满上限的号选号阶段已被过滤，
-                        # 这里再 acquire 一次以闭合并发窗口（选号与占用之间有间隙）。
-                        if not POOL.acquire_account(acc_i):
-                            continue
+                        # The fair selector already owns this account lease.
                         tried_ids.add(acc_i.id)
                         held_uid = acc_i.uid or ""
                         retry_budget.consume()
@@ -2990,8 +3029,6 @@ async def responses_proxy(
                                                 account_id=getattr(key, "account_id", None), key_id=key.id)
                     if not acc_i:
                         break
-                    if not POOL.acquire_account(acc_i):
-                        continue
                     tried_ids.add(acc_i.id)
                     held_uid = acc_i.uid or ""
                     retry_budget.consume()
@@ -3166,8 +3203,6 @@ async def responses_proxy(
                                                 account_id=getattr(key, "account_id", None), key_id=key.id)
                         if not acc_i:
                             break
-                        if not POOL.acquire_account(acc_i):
-                            continue
                         tried_ids.add(acc_i.id)
                         held_uid = acc_i.uid or ""
                         retry_budget.consume()
@@ -3478,8 +3513,6 @@ async def anthropic_messages(
                                                 account_id=getattr(key, "account_id", None), key_id=key.id)
                     if not acc_i:
                         break
-                    if not POOL.acquire_account(acc_i):
-                        continue
                     tried_ids.add(acc_i.id)
                     held_uid = acc_i.uid or ""
                     retry_budget.consume()
@@ -3570,7 +3603,7 @@ async def anthropic_messages(
                             held_uid = ""
                             await _blocking_call(_record_usage, key.id, acc_i.id, m, cost_info["credits"], updated,
                                           persist_auth=not getattr(sess_i, "_gateway_auth_persisted", False),
-                                          reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="anthropic",
+                                          reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
                                           prompt_tokens=cost_info["prompt_tokens"],
                                           completion_tokens=cost_info["completion_tokens"],
                                           total_tokens=cost_info["total_tokens"],
@@ -3595,7 +3628,7 @@ async def anthropic_messages(
             err_kind = last_err_kind or "no_account"
             seq = _log_chat_row(None, None, resolved, "anthropic", "-", 503, None, error_kind=err_kind)
             await _blocking_call(_record_usage, key.id, 0, resolved, 0.0, None,
-                          reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="anthropic",
+                          reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
                           seq=seq, error_kind=err_kind)
             if POOL.waf.active():
                 return JSONResponse(status_code=503, headers={"Retry-After": str(max(3, POOL.waf.remaining()))}, content={"type": "error", "error": {
@@ -3656,8 +3689,6 @@ async def anthropic_messages(
                                                 account_id=getattr(key, "account_id", None), key_id=key.id)
                         if not acc_i:
                             break
-                        if not POOL.acquire_account(acc_i):
-                            continue
                         tried_ids.add(acc_i.id)
                         held_uid = acc_i.uid or ""
                         retry_budget.consume()
@@ -3762,7 +3793,7 @@ async def anthropic_messages(
                                 seq = _log_chat_row(None, latency_ms, final_model, "anthropic",
                                                     final_uid, 200, None, error_kind=kind)
                                 await _blocking_call(_record_usage, key.id, final_acc_id, final_model, 0.0, None,
-                                              reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="anthropic",
+                                              reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
                                               seq=seq, latency_ms=latency_ms, error_kind=kind)
                                 sess_i.close()
                                 POOL.release(held_uid)
@@ -3795,7 +3826,7 @@ async def anthropic_messages(
                             held_uid = ""
                             await _blocking_call(_record_usage, key.id, final_acc_id, final_model, usage["credits"], updated,
                                           persist_auth=not getattr(sess_i, "_gateway_auth_persisted", False),
-                                          reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="anthropic",
+                                          reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
                                           prompt_tokens=usage["prompt_tokens"],
                                           completion_tokens=usage["completion_tokens"],
                                           total_tokens=usage["total_tokens"],
@@ -3812,7 +3843,7 @@ async def anthropic_messages(
                                 latency_ms = int((time.perf_counter() - request_start) * 1000)
                                 seq = _log_chat_row(None, latency_ms, m, "stream", "-", 502, None, error_kind="transport")
                                 await _blocking_call(_record_usage, key.id, 0, m, 0.0, None,
-                                                     reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request),
+                                                     reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request),
                                                      use_case="anthropic", seq=seq, latency_ms=latency_ms, error_kind="transport")
                                 yield conv.error_event("上游流中断，请重试", "api_error")
                                 sess_i.close()
@@ -3835,7 +3866,7 @@ async def anthropic_messages(
             err_kind = last_err_kind or "no_account"
             seq = _log_chat_row(None, latency_ms, final_model, "anthropic", "-", 503, None, error_kind=err_kind)
             await _blocking_call(_record_usage, key.id, 0, final_model, 0.0, None,
-                          reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="anthropic",
+                          reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
                           seq=seq, latency_ms=latency_ms, error_kind=err_kind)
             if err_kind == "waf":
                 msg = _exhaustion_message("waf", last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status)

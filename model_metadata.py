@@ -13,6 +13,27 @@ METADATA_FIELDS = ("name", "descriptionZh", "descriptionEn", "description", "cre
                    "tags", "promotions", "tier")
 
 
+def is_image_model(model_id):
+    """Known image-only IDs must not enter automatic chat fallback."""
+    return str(model_id or '').lower().startswith('hunyuan-image-')
+
+
+def model_type(model):
+    """Classify output modality; vision inputs still belong to text models."""
+    meta = model.get('metadata') if isinstance(model.get('metadata'), dict) else model
+    tags = meta.get('tags') or []
+    tags = {tag.lower() for tag in tags if isinstance(tag, str)} if isinstance(tags, list) else set()
+    return 'image' if (is_image_model(model.get('model_id') or model.get('id'))
+        or tags & {'text-to-image', 'image-to-image'} or meta.get('kind') == 'image') else 'text'
+
+
+def type_tags(model):
+    meta = model.get('metadata') if isinstance(model.get('metadata'), dict) else model
+    tags = meta.get('tags') or []
+    tags = [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+    return list(dict.fromkeys([*tags, model_type(model)]))
+
+
 def merge_product_catalog(payload, product):
     result = deepcopy(payload)
     data = result.get("data")

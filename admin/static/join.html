@@ -474,12 +474,13 @@
     var masked = (data && data.masked) || "";
     try {
       localStorage.setItem("wb_join_done", JSON.stringify({
-        t: Date.now(), masked: masked
+        t: Date.now(), masked: masked, invitation: data.invitation
       }));
     } catch (e) { /* 隐私模式忽略 */ }
     if (!offWin || offWin.closed) return;
     try {
-      offWin.location.replace("/join?done=1&m=" + encodeURIComponent(masked));
+      offWin.location.replace("/join?done=1&m=" + encodeURIComponent(masked) +
+        "&invitation=" + encodeURIComponent(data.invitation && data.invitation.status !== 'disabled' ? data.invitation.message : ''));
     } catch (e) {
       // 跨域被拒（理论上没有 COOP 不该发生）-> 退回到只提示，不报错
     }
@@ -499,6 +500,10 @@
       $("resDesc").innerHTML = masked
         ? "欢迎，" + "<b>" + esc(masked) + "</b>"
         : "欢迎使用";
+      if (q.get('invitation')) {
+        $("resDesc").appendChild(document.createElement('br'));
+        $("resDesc").appendChild(document.createTextNode(q.get('invitation')));
+      }
       $("resHint").textContent = "可以关闭本页面了。";
       $("againBtn").classList.add("hidden");
       show("step3");
@@ -525,6 +530,10 @@
       $("resDesc").innerHTML = d.masked
         ? "欢迎，" + "<b>" + esc(d.masked) + "</b>"
         : "欢迎使用";
+      if (d.invitation && d.invitation.status !== 'disabled') {
+        $("resDesc").appendChild(document.createElement('br'));
+        $("resDesc").appendChild(document.createTextNode(d.invitation.message));
+      }
       $("resHint").textContent = "";
       $("againBtn").classList.remove("hidden");
       show("step3");
@@ -664,6 +673,10 @@
     $("resDesc").innerHTML = data.masked
       ? "欢迎，" + "<b>" + esc(data.masked) + "</b>"
       : "欢迎使用";
+    if (data.invitation && data.invitation.status !== 'disabled') {
+      $("resDesc").appendChild(document.createElement('br'));
+      $("resDesc").appendChild(document.createTextNode(data.invitation.message));
+    }
     // 若用户还开着那个官方验证窗口，告诉他可以关了
     if (offWin && !offWin.closed) {
       $("resHint").textContent = "验证页面可以关闭了。";

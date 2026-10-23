@@ -138,7 +138,7 @@ async def before_send(scope, account_key):
         _queue.append(ticket)
         _counts[key_id] += 1
     started = time.monotonic()
-    deadline = started + max(0, settings.GATEWAY_WAIT_TIMEOUT)
+    deadline = started + max(0, getattr(settings, 'GATEWAY_QUEUE_TIMEOUT', 90))
     checked = 0.0
     interval = 0
     try:

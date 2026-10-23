@@ -9,6 +9,19 @@ window.WBIP = (() => {
   const statusTag = blocked => `<span class="badge ${blocked?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${blocked?'已封禁':'允许'}</span>`;
   const banStatusTag = enabled => `<span class="badge ${enabled?'bg-red-100 text-red-700':'bg-slate-100 text-slate-500'}">${enabled?'已封禁':'已解除'}</span>`;
   const concurrentTag = value => `<span class="badge ${Number(value)>0?'bg-indigo-100 text-indigo-700':'bg-slate-100 text-slate-500'}" title="当前服务进程的在途请求，包含排队与流式请求">并发 ${num(value)}</span>`;
+  function ipTooltip(row) {
+    const info = row.client_details || {};
+    const list = values => values?.length ? values.join(', ') : '未上报';
+    const ua = info.user_agent || '';
+    const client = /claude/i.test(ua) ? 'Claude 客户端' : /codex/i.test(ua) ? 'Codex 客户端'
+      : /openai/i.test(ua) ? 'OpenAI SDK' : /anthropic/i.test(ua) ? 'Anthropic SDK'
+      : /curl/i.test(ua) ? 'curl' : /python-httpx/i.test(ua) ? 'Python HTTPX'
+      : /python-requests/i.test(ua) ? 'Python Requests' : /mozilla/i.test(ua) ? '浏览器' : '未知';
+    return [`客户端（按 UA 识别）：${client}`, `UA：${ua || '未记录（更新后新请求开始采集）'}`,
+      `设备 ID：${list(info.device_ids)}`, `指纹：${list(info.fingerprints)}`, `MAC：${list(info.macs)}`,
+      'UA 和设备标识由客户端上报，可被修改；服务端无法跨公网获取网卡 MAC。',
+      '最近已认证请求 · 每类设备标识最多显示 3 个 · 点击 IP 查看用量'].join('\n');
+  }
   let devices = [], deviceBusy = false;
   function deviceHTML(items, scope) {
     const names = {device_id:'设备 ID',fingerprint:'客户端指纹',mac:'MAC'};
@@ -48,6 +61,12 @@ window.WBIP = (() => {
     $('#ipActivitySummary').textContent = '正在加载…';
     try {
       const query = new URLSearchParams({days:uiSelectValue('ipActivityDays'),sort:sortKey,direction,offset,limit:100});
+      query.set('min_requests',$('#ipUsageMin').value||'0');
+      const usageFilter=$('#ipUsageFilter').value;
+      $('#ipUsageMaxLabel').classList.toggle('hidden',!usageFilter);
+      $('#ipUsageMaxText').textContent=usageFilter==='credits'?'平均积分 ≤':'平均 Token ≤';
+      if(usageFilter)query.set(usageFilter==='tokens'?'max_avg_tokens':'max_avg_credits',$('#ipUsageMax').value||'0');
+      if($('#ipActivityIP').value.trim())query.set('ip',$('#ipActivityIP').value.trim());
       const [stats, list, deviceList] = await Promise.all([request('/api/ip/activity?'+query),request('/api/ip/blocked'),request('/api/ip/devices')]);
       if (version !== generation) return;
       if (offset >= stats.total_ips && offset > 0) {offset = 0; return load();}
@@ -61,8 +80,10 @@ window.WBIP = (() => {
         th.querySelector('button').textContent = labels[key]+(key === sortKey ? (direction === 'desc'?' ↓':' ↑'):'');
       });
       $('#ipActivityBody').innerHTML = activity.length ? activity.map((row,i) => `<tr>
-        <td><code>${e(row.ip)}</code>${row.ip === currentIP ? '<small class="block text-slate-400">当前访问 IP</small>':''}</td>
-        <td>${num(row.requests)}</td><td>${num(row.failed)}</td><td>${num(row.blocked_requests)}</td><td>${num(row.credits)}</td><td>${num(row.tokens)}</td>
+        <td><button type="button" class="console-btn quiet font-mono" data-usage-ip="${e(row.ip)}" data-tooltip="${e(row.ip)}" data-tooltip-description="${e(ipTooltip(row))}">${e(row.ip)}</button>${row.ip === currentIP ? '<small class="block text-slate-400">当前访问 IP</small>':''}</td>
+        <td>${num(row.requests)}</td><td>${num(row.failed)}</td><td>${num(row.blocked_requests)}</td>
+        <td>${num(row.credits)}<small class="block text-slate-400">均 ${row.avg_credits==null?'—':Number(row.avg_credits).toFixed(4)}</small></td>
+        <td>${num(row.tokens)}<small class="block text-slate-400">均 ${row.avg_tokens==null?'—':num(row.avg_tokens)} · ${num(row.known_usage)} 次有用量</small></td>
         <td>${e(fmtTime(row.last_seen))}</td><td>${statusTag(row.blocked)}</td>
         <td><button type="button" class="console-btn quiet" onclick="WBIP.toggleActivity(${i})">${row.blocked?'解除封禁':'封禁'}</button></td></tr>`).join('') : '<tr><td colspan="9" class="text-center text-slate-400">所选时间内暂无请求</td></tr>';
       $('#ipActivityPager').innerHTML = pagerHtml(stats.total_ips,Math.floor(offset/100)+1,Math.ceil(stats.total_ips/100),'WBIP.goPage');
@@ -106,6 +127,13 @@ window.WBIP = (() => {
     await mutate(()=>request('/api/ip/blocked/'+row.id,{method:'DELETE'}),'已删除封禁记录');
   }
   return {load,add,toggleActivity,toggleBan,remove,ranges,statusTag,banStatusTag,concurrentTag,deviceHTML,changeDevice,
+    usageFilter(){
+      const mode=$('#ipUsageFilter').value;
+      $('#ipUsageMaxLabel').classList.toggle('hidden',!mode);
+      $('#ipUsageMaxText').textContent=mode==='credits'?'平均积分 ≤':'平均 Token ≤';
+      $('#ipUsageMin').value=mode?'10':'0';$('#ipUsageMax').value=mode==='credits'?'0.01':'100';
+      offset=0;load();
+    },
     async toggleDevice(index){if(await changeDevice(devices[index]))load();},
     goPage(page){offset=Math.max(0,(page-1)*100);load();},
     range(){offset=0;load();},
