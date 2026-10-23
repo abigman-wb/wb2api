@@ -139,6 +139,16 @@ class Settings:
     #: 粘性路由与加权选号都会倾向少数账号，叠加长连接后单号容易过载，
     #: 上游按账号限速时会成片 429/5xx；在途上限把并发摊平到整个池子。
     MAX_IN_FLIGHT = int(os.getenv("ADMIN_POOL_MAX_IN_FLIGHT", "3"))
+    #: 每账号滚动窗口内的积分预算（0 = 关闭）。
+    #:
+    #: 上游按「账号 × 5 小时窗口」的使用量限流（6000–6008），而窗口起点是该号
+    #: 窗口内**第一笔请求**，逐号不同且随用随滚 —— 所以「按钟点清零」的定点闸门
+    #: 永远对不齐（14:59 清一次、15:01 又能满载，等于没上限）。
+    #: 这里改为选号前用 usage_logs 现算最近 WINDOW_CREDIT_HOURS 小时的积分和，
+    #: 达到预算就跳过该号：在撞墙之前停手，而不是被上游冷却数小时。
+    #: 预算建议 = 实测撞墙点 × 0.9（留 10% 余量）。
+    WINDOW_CREDIT_BUDGET = float(os.getenv("ADMIN_POOL_WINDOW_CREDIT_BUDGET", "0"))
+    WINDOW_CREDIT_HOURS = max(0.1, float(os.getenv("ADMIN_POOL_WINDOW_CREDIT_HOURS", "5")))
     #: 会话粘性路由开关。开启后同一会话固定同一账号：
     #: 上游前缀缓存不碎、多轮更快更省，且一次会话不在号池里逐轮跳号（拟人）。
     STICKY_ENABLED = os.getenv("ADMIN_SESSION_STICKY", "1") != "0"

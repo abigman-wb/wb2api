@@ -1818,6 +1818,38 @@ def _transient_cool_fallback(db: Session, exclude_ids: set | None,
     return q.order_by(Account.cool_until.asc()).limit(limit).all()
 
 
+def _window_credit_spend(db: Session, ids: list[int], now: datetime) -> dict[int, float]:
+    """最近 `WINDOW_CREDIT_HOURS` 小时内每个账号已消耗的积分（无记录=0）。
+
+    数据源是 usage_logs 本身（`ix_usage_logs_account_created` 覆盖），所以窗口
+    边界天然跟随上游的滚动语义，不需要知道窗口起点在哪。
+    """
+    if not ids:
+        return {}
+    since = now - timedelta(hours=settings.WINDOW_CREDIT_HOURS)
+    rows = (db.query(UsageLog.account_id, func.sum(UsageLog.credits))
+            .filter(UsageLog.account_id.in_(ids), UsageLog.created_at >= since)
+            .group_by(UsageLog.account_id).all())
+    return {aid: float(total or 0) for aid, total in rows}
+
+
+def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> list[Account]:
+    """剔除已达窗口积分预算的账号（预算 <= 0 时原样返回）。
+
+    为什么不靠上游 429 再冷却：上游给的恢复时间是整段窗口（实测 4.5 小时），
+    一次打爆就是全池停摆数小时；提前 10% 停手，代价只是提前换号。
+    """
+    budget = settings.WINDOW_CREDIT_BUDGET
+    if budget <= 0 or not rows:
+        return rows
+    spend = _window_credit_spend(db, [a.id for a in rows], now)
+    kept = [a for a in rows if spend.get(a.id, 0.0) < budget]
+    if len(kept) != len(rows):
+        _logger.info("window budget: skip %d account(s) over %.0f credits / %.1fh",
+                     len(rows) - len(kept), budget, settings.WINDOW_CREDIT_HOURS)
+    return kept
+
+
 def _no_account_reason(db: Session, account_id=None, key_id=None) -> str:
     """`_select_account` 选不出号时，给出一句**如实**的原因。
 
@@ -1846,6 +1878,12 @@ def _no_account_reason(db: Session, account_id=None, key_id=None) -> str:
         left = max(0, int((soon - now).total_seconds()))
         return (f"全部 {len(funded)} 个账号正被上游临时限流"
                 f"（最近一个约 {left} 秒后恢复，无需人工处理）")
+    if settings.WINDOW_CREDIT_BUDGET > 0:
+        spend = _window_credit_spend(db, [a.id for a in funded], now)
+        if all(spend.get(a.id, 0.0) >= settings.WINDOW_CREDIT_BUDGET for a in funded):
+            return (f"全部 {len(funded)} 个账号已在最近 {settings.WINDOW_CREDIT_HOURS:g} 小时内"
+                    f"用满窗口预算（{settings.WINDOW_CREDIT_BUDGET:g} 积分/号）；"
+                    f"这是本地主动限速，等窗口滚动后自动恢复，不需要人工处理")
     blocked = len(funded) - len(transient)
     return (f"{len(funded)} 个账号有余额，但当前都不可选"
             f"（其中 {blocked} 个处于熔断/降权或需人工处理的异常状态）")
@@ -1975,6 +2013,13 @@ def _select_account(db: Session, exclude_ids: set | None = None,
 
     # 在途占满的号不参与选号（把并发摊平到整个池子，避免单号过载→成片 429）
     rows = POOL.available(rows)
+    if not rows:
+        return None
+
+    # 窗口预算：上游按「账号×5 小时窗口」限流，超预算的号在撞墙前就停手。
+    # 放在在途过滤之后、粘性/策略之前 —— 被剔掉的号既不会被粘性绑回，
+    # 也不会被加权策略挑中。
+    rows = _filter_window_budget(db, rows, now)
     if not rows:
         return None
 
