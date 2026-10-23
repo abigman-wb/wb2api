@@ -92,3 +92,6 @@ select = ["E", "F", "W", "I", "B"]
 "scripts/check_maintenance.py" = ["E402", "E501", "E701", "E702", "F401", "I001"]
 "scripts/check_runtime.py" = ["I001"]
 "scripts/export_credential_key.py" = ["I001"]
+# 迁移自 1.13.0 的回归测试：闭包在同一个循环迭代内被消费，晚绑定是安全的；
+# 重试循环里的 attempt 仅用于计数。语义不改，仅冻结这两条。
+"tests/*.py" = ["B023", "B007"]
