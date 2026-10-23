@@ -88,8 +88,18 @@ jobs:
           python -m pip install --disable-pip-version-check "pip-tools==7.6.2"
           pip-compile requirements.in --output-file requirements.lock --strip-extras --quiet
           git add requirements.in requirements.lock
-          git commit -m "build(deps): 跟随上游刷新依赖锁" || echo "::notice title=锁无变化::重新解析结果与原锁一致。"
-          git --no-pager diff --stat HEAD~1 HEAD || true
+          if git diff --cached --quiet; then
+            echo "::notice title=锁无变化::重新解析结果与原锁一致。"
+            exit 0
+          fi
+          git commit -m "build(deps): 跟随上游刷新依赖锁"
+          # 把依赖层面的真实差异写进 run summary：新包 / 被提升的包一目了然
+          {
+            echo "## 上游依赖变更"
+            echo '```diff'
+            git --no-pager diff --unified=0 HEAD~1 HEAD -- requirements.lock | grep -E "^[+-][A-Za-z0-9]" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Gate 1/4 ruff
         if: steps.merge.outputs.changed == 'true'

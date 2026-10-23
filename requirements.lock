@@ -3,6 +3,12 @@
 # 由 `docker exec workbuddy2api python3 -m pip freeze` 取得，再用
 # `pip-compile requirements.in --constraint <基线>`（Python 3.12）生成。
 #
+# 两份输入的关系：
+#   requirements.txt  = 上游维护的「可读直接依赖」，唯一权威来源
+#   requirements.in   = 它的逐字镜像，同步上游时由 sync-upstream 自动 cp 覆盖
+#   本文件            = pip-compile 的产物，版本全在这里钉
+#   CI 的 lock-check 会校验 txt == in，并用现有锁重新解析比对包行
+#
 # 更新方式（不要手改）：
 #   1) pip-compile requirements.in --output-file requirements.lock --strip-extras
 #   2) pip install -c requirements.lock -r requirements.txt && pip check
