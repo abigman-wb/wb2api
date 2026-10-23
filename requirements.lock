@@ -1,0 +1,123 @@
+#
+# wb2api 依赖锁 —— 基线：2026-10-23 线上容器（wb2api 1.14.0）实际安装版本
+# 由 `docker exec workbuddy2api python3 -m pip freeze` 取得，再用
+# `pip-compile requirements.in --constraint <基线>`（Python 3.12）生成。
+#
+# 更新方式（不要手改）：
+#   1) pip-compile requirements.in --output-file requirements.lock --strip-extras
+#   2) pip install -c requirements.lock -r requirements.txt && pip check
+#   3) python -m unittest discover -s tests -t .
+#   依赖升级单独开 PR，不与功能改动混在一起。
+annotated-doc==0.0.5
+    # via
+    #   fastapi
+annotated-types==0.8.0
+    # via
+    #   pydantic
+anyio==4.15.1
+    # via
+    #   httpx
+    #   starlette
+    #   watchfiles
+certifi==2026.10.19
+    # via
+    #   httpcore
+    #   httpx
+cffi==2.1.1
+    # via
+    #   cryptography
+click==8.5.0
+    # via
+    #   uvicorn
+cryptography==50.0.2
+    # via
+    #   -r requirements.in
+fastapi==0.159.1
+    # via
+    #   -r requirements.in
+h11==0.16.0
+    # via
+    #   httpcore
+    #   uvicorn
+httpcore==1.0.9
+    # via
+    #   httpx
+httptools==0.9.0
+    # via
+    #   uvicorn
+httpx==0.28.1
+    # via
+    #   -r requirements.in
+idna==3.20
+    # via
+    #   anyio
+    #   httpx
+opentelemetry-api==1.45.1
+    # via
+    #   fastapi
+packaging==26.3
+    # via
+    #   -r requirements.in
+pycparser==3.11
+    # via
+    #   cffi
+pydantic==2.14.1
+    # via
+    #   fastapi
+pydantic-core==2.50.1
+    # via
+    #   pydantic
+pyjwt==2.15.1
+    # via
+    #   -r requirements.in
+pymysql==1.2.3
+    # via
+    #   -r requirements.in
+python-dotenv==1.2.4
+    # via
+    #   -r requirements.in
+    #   uvicorn
+python-multipart==0.0.32
+    # via
+    #   -r requirements.in
+pyyaml==6.0.3
+    # via
+    #   uvicorn
+redis==8.1.0
+    # via
+    #   -r requirements.in
+sqlalchemy==2.1.6
+    # via
+    #   -r requirements.in
+starlette==1.9.0
+    # via
+    #   fastapi
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   fastapi
+    #   opentelemetry-api
+    #   pydantic
+    #   pydantic-core
+    #   sqlalchemy
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via
+    #   fastapi
+    #   pydantic
+tzdata==2026.5
+    # via
+    #   -r requirements.in
+uvicorn==0.54.0
+    # via
+    #   -r requirements.in
+uvloop==0.23.0
+    # via
+    #   uvicorn
+watchfiles==1.3.0
+    # via
+    #   uvicorn
+websockets==17.3
+    # via
+    #   uvicorn
