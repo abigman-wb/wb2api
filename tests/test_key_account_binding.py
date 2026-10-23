@@ -1,4 +1,5 @@
 """Offline ownership regressions with real SQLite and mocked upstream traffic."""
+
 import asyncio
 import importlib
 import json
@@ -11,18 +12,18 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
-from admin import db as database, model_catalog, pool, upstream_http
+from admin import db as database
+from admin import upstream_http
 from admin.account_binding import binding_owners, scope_accounts
 from admin.db import Base, get_db
-from admin.models import Account, ApiKey, AccountModelCooldown, ModelConfig, ModelGroup, ModelGroupItem
+from admin.models import Account, AccountModelCooldown, ApiKey, ModelConfig, ModelGroup, ModelGroupItem
 from admin.routers import keys
 from admin.security import hash_key, require_admin
+
 
 class _DelegatingBackend(types.ModuleType):
     """替身只覆盖需要打桩的三个属性，其余一律转发给真实 admin.backend。
@@ -57,15 +58,23 @@ class Fixture:
         self.db = self.factory()
         self.a = Account(name="private", uid="private", auth_json='{"test":"private"}', balance_remain=100)
         self.b = Account(name="public", uid="public", auth_json='{"test":"public"}', balance_remain=100)
-        self.db.add_all([self.a, self.b, ModelConfig(model_id="free", credit_multiplier=0),
-                         ModelConfig(model_id="other", credit_multiplier=1)])
+        self.db.add_all(
+            [
+                self.a,
+                self.b,
+                ModelConfig(model_id="free", credit_multiplier=0),
+                ModelConfig(model_id="other", credit_multiplier=1),
+            ]
+        )
         self.db.commit()
         self.private = ApiKey(name="private", key_hash=hash_key("private-key"), account_id=self.a.id, unlimited=1)
         self.public = ApiKey(name="public", key_hash=hash_key("public-key"), unlimited=1)
         self.db.add_all([self.private, self.public])
         self.db.commit()
         self.stack = ExitStack()
-        catalog = self.stack.enter_context(patch.object(proxy.model_catalog, "get_models", return_value=[{"id":"free"}]))
+        catalog = self.stack.enter_context(
+            patch.object(proxy.model_catalog, "get_models", return_value=[{"id": "free"}])
+        )
         self.catalog = catalog
         self.stack.enter_context(patch.object(proxy, "SessionLocal", self.factory))
         self.stack.enter_context(patch.object(proxy, "_record_usage", lambda *a, **kw: None))
@@ -94,7 +103,9 @@ class OwnershipTests(Fixture, unittest.TestCase):
         self.assertEqual(proxy._select_account(self.db, mark_picked=False).id, self.b.id)
         self.assertEqual(proxy._select_account(self.db, account_id=self.a.id, key_id=self.private.id).id, self.a.id)
         self.assertIsNone(proxy._select_account(self.db, account_id=self.a.id, key_id=self.public.id))
-        self.assertIsNone(proxy._select_account(self.db, account_id=self.a.id, key_id=self.private.id, exclude_ids={self.a.id}))
+        self.assertIsNone(
+            proxy._select_account(self.db, account_id=self.a.id, key_id=self.private.id, exclude_ids={self.a.id})
+        )
 
     def test_fallback_cannot_cross_boundary(self):
         for a in (self.a, self.b):
@@ -108,7 +119,9 @@ class OwnershipTests(Fixture, unittest.TestCase):
         self.assertIsNone(proxy._select_account(self.db))
 
     def test_sticky_cannot_cross_boundary(self):
-        with patch.object(proxy.POOL.sticky, "resolve", side_effect=lambda key, uids: "private" if "private" in uids else None):
+        with patch.object(
+            proxy.POOL.sticky, "resolve", side_effect=lambda key, uids: "private" if "private" in uids else None
+        ):
             self.assertEqual(proxy._select_account(self.db, sticky_key="session").id, self.b.id)
 
     def test_duplicate_uid_reserved_and_conflicts(self):
@@ -122,10 +135,10 @@ class OwnershipTests(Fixture, unittest.TestCase):
         self.assertEqual(err.exception.status_code, 409)
 
     def test_revocation_keeps_reservation_and_unbind_releases(self):
-        keys.patch_key(self.private.id, {"status":"revoked"}, db=self.db)
+        keys.patch_key(self.private.id, {"status": "revoked"}, db=self.db)
         self.assertEqual(proxy._select_account(self.db).id, self.b.id)
         self.assertIsNone(proxy._select_account(self.db, account_id=self.a.id, key_id=self.private.id))
-        keys.patch_key(self.private.id, {"account_id":0}, db=self.db)
+        keys.patch_key(self.private.id, {"account_id": 0}, db=self.db)
         self.assertEqual({a.id for a in scope_accounts(self.db.query(Account)).all()}, {self.a.id, self.b.id})
 
     def test_delete_key_releases_and_delete_account_is_guarded(self):
@@ -157,7 +170,7 @@ class OwnershipTests(Fixture, unittest.TestCase):
         self.db.commit()
         self.assertEqual(proxy._key_allowed_models(self.db, self.private), set())
         self.private.group_id = 0
-        self.db.query(ModelConfig).filter_by(model_id="free").update({"enabled":0})
+        self.db.query(ModelConfig).filter_by(model_id="free").update({"enabled": 0})
         self.db.commit()
         self.assertEqual(proxy._key_allowed_models(self.db, self.private), set())
 
@@ -169,41 +182,53 @@ class OwnershipTests(Fixture, unittest.TestCase):
 
     def test_database_constraint_and_old_schema_migration(self):
         self.db.add(ApiKey(key_hash="race", account_id=self.a.id))
-        with self.assertRaises(IntegrityError): self.db.commit()
+        with self.assertRaises(IntegrityError):
+            self.db.commit()
         self.db.rollback()
         self.db.close()
         with self.engine.begin() as conn:
             conn.execute(text("DROP TABLE api_keys"))
-            conn.execute(text("CREATE TABLE api_keys (id INTEGER PRIMARY KEY, key_hash VARCHAR(128), group_id INT DEFAULT 0)"))
+            conn.execute(
+                text("CREATE TABLE api_keys (id INTEGER PRIMARY KEY, key_hash VARCHAR(128), group_id INT DEFAULT 0)")
+            )
         with patch.object(database, "engine", self.engine):
             self.assertTrue(database.init_db())
             self.assertTrue(database.init_db())
         self.assertIn("account_id", [c["name"] for c in inspect(self.engine).get_columns("api_keys")])
-        self.assertTrue(any(i["unique"] for i in inspect(self.engine).get_indexes("api_keys") if i["name"] == "ux_api_keys_account"))
+        self.assertTrue(
+            any(i["unique"] for i in inspect(self.engine).get_indexes("api_keys") if i["name"] == "ux_api_keys_account")
+        )
 
     def test_management_http_contract(self):
         app = FastAPI()
         app.include_router(keys.router)
         app.dependency_overrides[require_admin] = lambda: True
         app.dependency_overrides[get_db] = lambda: self.db
+
         async def exercise():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                self.assertEqual((await client.post("/api/keys", json={"account_id":self.a.id})).status_code, 409)
-                self.assertEqual((await client.post("/api/keys", json={"account_id":9999})).status_code, 400)
-                self.assertEqual((await client.patch(f"/api/keys/{self.public.id}", json={"account_id":"bad"})).status_code, 400)
-                created = await client.post("/api/keys", json={"account_id":self.b.id, "unlimited":True})
+                self.assertEqual((await client.post("/api/keys", json={"account_id": self.a.id})).status_code, 409)
+                self.assertEqual((await client.post("/api/keys", json={"account_id": 9999})).status_code, 400)
+                self.assertEqual(
+                    (await client.patch(f"/api/keys/{self.public.id}", json={"account_id": "bad"})).status_code, 400
+                )
+                created = await client.post("/api/keys", json={"account_id": self.b.id, "unlimited": True})
                 self.assertEqual(created.status_code, 200)
                 self.assertEqual(created.json()["account_id"], self.b.id)
                 rows = (await client.get("/api/keys")).json()["items"]
                 self.assertEqual(rows[0]["account_name"], "public")
-                self.assertEqual((await client.patch(f'/api/keys/{created.json()["id"]}', json={"account_id":None})).status_code, 200)
+                self.assertEqual(
+                    (await client.patch(f"/api/keys/{created.json()['id']}", json={"account_id": None})).status_code,
+                    200,
+                )
+
         asyncio.run(exercise())
 
     def test_models_failure_retries_only_bound_account(self):
         session = MagicMock()
-        session.updated_json.return_value = '{}'
+        session.updated_json.return_value = "{}"
         session.fetch_models.side_effect = RuntimeError("HTTP 500 upstream")
-        session.fetch_model_busy.return_value = {"code":0, "data":[]}
+        session.fetch_model_busy.return_value = {"code": 0, "data": []}
         context = MagicMock()
         context.__enter__.return_value = session
         with patch.object(proxy.backend, "AccountSession", return_value=context):
@@ -212,7 +237,7 @@ class OwnershipTests(Fixture, unittest.TestCase):
             self.db.expire_all()
             self.assertEqual(self.a.err_count, 0)
             session.fetch_models.side_effect = None
-            session.fetch_models.return_value = [{"id":"free"}]
+            session.fetch_models.return_value = [{"id": "free"}]
             result = proxy.models(db=self.db, x_api_key="private-key", authorization=None)
             self.assertEqual([m["id"] for m in result["data"]], ["free"])
             session.fetch_models.reset_mock()
@@ -220,7 +245,7 @@ class OwnershipTests(Fixture, unittest.TestCase):
             result = proxy.models(db=self.db, x_api_key="private-key", authorization=None)
             self.assertEqual(result.status_code, 502)
             session.fetch_models.assert_called_once()
-            self.assertIn('1 个账号', json.loads(result.body)["error"]["message"])
+            self.assertIn("1 个账号", json.loads(result.body)["error"]["message"])
 
     def test_dedupe_preserves_reserved_record(self):
         older = Account(uid="duplicate", auth_json="{}", balance_remain=100)
@@ -236,20 +261,49 @@ class OwnershipTests(Fixture, unittest.TestCase):
 
 class ProtocolTests(Fixture, unittest.IsolatedAsyncioTestCase):
     async def test_all_protocols_streaming_and_nonstreaming_ownership(self):
-        success = ('data: '+json.dumps({"id":"t", "choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":None}]})+'\n\n'
-                   +'data: '+json.dumps({"id":"t", "choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}})+'\n\n'
-                   +'data: [DONE]\n\n')
+        success = (
+            "data: "
+            + json.dumps({"id": "t", "choices": [{"index": 0, "delta": {"content": "hello"}, "finish_reason": None}]})
+            + "\n\n"
+            + "data: "
+            + json.dumps(
+                {
+                    "id": "t",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                }
+            )
+            + "\n\n"
+            + "data: [DONE]\n\n"
+        )
+
         class Credential:
-            def __init__(self, a): self.a = a
-            def get_headers(self, extra=None): return {"test-account":str(self.a.id)}
-            def updated_json(self): return self.a.auth_json
-            def close(self): pass
-        async def session(db, a): return Credential(a)
-        async def backoff(n): pass
+            def __init__(self, a):
+                self.a = a
+
+            def get_headers(self, extra=None):
+                return {"test-account": str(self.a.id)}
+
+            def updated_json(self):
+                return self.a.auth_json
+
+            def close(self):
+                pass
+
+        async def session(db, a):
+            return Credential(a)
+
+        async def backoff(n):
+            pass
+
         original = httpx.AsyncClient
-        for handler, protocol in [(proxy.chat_completions,"chat"), (proxy.responses_proxy,"responses"), (proxy.anthropic_messages,"messages")]:
+        for handler, protocol in [
+            (proxy.chat_completions, "chat"),
+            (proxy.responses_proxy, "responses"),
+            (proxy.anthropic_messages, "messages"),
+        ]:
             for streaming in (False, True):
-                for token, expected in [("private-key",self.a.id), ("public-key",self.b.id)]:
+                for token, expected in [("private-key", self.a.id), ("public-key", self.b.id)]:
                     for failure in (False, True):
                         with self.subTest(protocol=protocol, stream=streaming, key=token, failure=failure):
                             with self.factory() as reset:
@@ -259,42 +313,82 @@ class ProtocolTests(Fixture, unittest.IsolatedAsyncioTestCase):
                                 reset.query(AccountModelCooldown).delete()
                                 reset.commit()
                             calls = []
+
                             async def transport(req):
                                 calls.append(int(req.headers["test-account"]))
                                 body = 'data: {"code":6004,"msg":"daily limit"}\n\n' if failure else success
-                                return httpx.Response(200,text=body,headers={"content-type":"text/event-stream"})
+                                return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
                             @asynccontextmanager
                             async def fake_client(request, timeout, limits, *, retry_budget=None, _t=transport):
                                 # 1.14.0 把 AsyncClient 的构造收进了
                                 # admin.upstream_http.client()，并且**无条件**塞入
                                 # _BorrowedTransport（真实网络）。所以不能再 patch
                                 # httpx.AsyncClient，只能在 client() 这一层替换。
-                                async with original(transport=httpx.MockTransport(_t),
-                                                    timeout=timeout, limits=limits) as conn:
+                                async with original(
+                                    transport=httpx.MockTransport(_t), timeout=timeout, limits=limits
+                                ) as conn:
                                     yield conn
-                            payload = {"model":"free", "stream":streaming, "messages":[{"role":"user","content":"hi"}], "max_tokens":20}
-                            if protocol == "responses": payload = {"model":"free","stream":streaming,"input":"hi"}
-                            async def receive(): return {"type":"http.request","body":json.dumps(payload).encode(),"more_body":False}
-                            request = Request({"type":"http","method":"POST","path":"/","headers":[],"client":("127.0.0.1",1)},receive)
-                            with patch.object(proxy, "_account_session_async",session), patch.object(upstream_http,"client",fake_client), patch.object(proxy.pool,"rotate_backoff_async",backoff):
+
+                            payload = {
+                                "model": "free",
+                                "stream": streaming,
+                                "messages": [{"role": "user", "content": "hi"}],
+                                "max_tokens": 20,
+                            }
+                            if protocol == "responses":
+                                payload = {"model": "free", "stream": streaming, "input": "hi"}
+
+                            async def receive():
+                                return {
+                                    "type": "http.request",
+                                    "body": json.dumps(payload).encode(),
+                                    "more_body": False,
+                                }
+
+                            request = Request(
+                                {
+                                    "type": "http",
+                                    "method": "POST",
+                                    "path": "/",
+                                    "headers": [],
+                                    "client": ("127.0.0.1", 1),
+                                },
+                                receive,
+                            )
+                            with (
+                                patch.object(proxy, "_account_session_async", session),
+                                patch.object(upstream_http, "client", fake_client),
+                                patch.object(proxy.pool, "rotate_backoff_async", backoff),
+                            ):
                                 with self.factory() as db:
                                     result = await handler(request, db=db, x_api_key=token, authorization=None)
                                     from tests import collect_response
+
                                     output = (await collect_response(result)).decode()
-                            self.assertEqual(calls,[expected])
-                            if not failure: self.assertIn("hello",output)
+                            self.assertEqual(calls, [expected])
+                            if not failure:
+                                self.assertIn("hello", output)
                             self.assertFalse(proxy.POOL.inflight.snapshot())
 
     async def test_all_protocols_reject_other_account_models_before_upstream(self):
-        for handler, protocol in [(proxy.chat_completions,"chat"), (proxy.responses_proxy,"responses"), (proxy.anthropic_messages,"messages")]:
-            payload = {"model":"other","messages":[{"role":"user","content":"hi"}],"max_tokens":20}
-            if protocol == "responses": payload["input"] = "hi"
-            async def receive(): return {"type":"http.request","body":json.dumps(payload).encode(),"more_body":False}
-            request = Request({"type":"http","method":"POST","path":"/","headers":[]},receive)
-            with patch.object(proxy,"_account_session_async",side_effect=AssertionError("must not call upstream")):
-                result = await handler(request,db=self.db,x_api_key="private-key",authorization=None)
-            self.assertEqual(result.status_code,403)
-            self.assertEqual(json.loads(result.body)["error"]["type"],"model_not_entitled")
+        for handler, protocol in [
+            (proxy.chat_completions, "chat"),
+            (proxy.responses_proxy, "responses"),
+            (proxy.anthropic_messages, "messages"),
+        ]:
+            payload = {"model": "other", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 20}
+            if protocol == "responses":
+                payload["input"] = "hi"
+
+            async def receive():
+                return {"type": "http.request", "body": json.dumps(payload).encode(), "more_body": False}
+
+            request = Request({"type": "http", "method": "POST", "path": "/", "headers": []}, receive)
+            with patch.object(proxy, "_account_session_async", side_effect=AssertionError("must not call upstream")):
+                result = await handler(request, db=self.db, x_api_key="private-key", authorization=None)
+            self.assertEqual(result.status_code, 403)
+            self.assertEqual(json.loads(result.body)["error"]["type"], "model_not_entitled")
 
 
 if __name__ == "__main__":
