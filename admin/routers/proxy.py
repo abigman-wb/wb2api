@@ -24,6 +24,7 @@ from sqlalchemy import or_, func, case
 from sqlalchemy.orm import Session
 
 from admin import backend, pool, model_limits, model_catalog, upstream_http, request_metrics, upstream_errors, routing_policy
+from admin import credit_budget
 from admin import client_profile as cprofile
 from admin.account_binding import scope_accounts
 from admin.request_scheduling import pool_budget, release_connection
@@ -1822,15 +1823,11 @@ def _window_credit_spend(db: Session, ids: list[int], now: datetime) -> dict[int
     """最近 `WINDOW_CREDIT_HOURS` 小时内每个账号已消耗的积分（无记录=0）。
 
     数据源是 usage_logs 本身（`ix_usage_logs_account_created` 覆盖），所以窗口
-    边界天然跟随上游的滚动语义，不需要知道窗口起点在哪。
+    边界天然跟随上游的滚动语义，不需要知道窗口起点在哪。窗口长度与预算都取自
+    `credit_budget.effective()`：后台保存值 > 环境变量 > 关闭。
     """
-    if not ids:
-        return {}
-    since = now - timedelta(hours=settings.WINDOW_CREDIT_HOURS)
-    rows = (db.query(UsageLog.account_id, func.sum(UsageLog.credits))
-            .filter(UsageLog.account_id.in_(ids), UsageLog.created_at >= since)
-            .group_by(UsageLog.account_id).all())
-    return {aid: float(total or 0) for aid, total in rows}
+    _budget, hours, _source = credit_budget.effective(db)
+    return credit_budget.spend(db, ids, now, hours)
 
 
 def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> list[Account]:
@@ -1839,14 +1836,14 @@ def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> li
     为什么不靠上游 429 再冷却：上游给的恢复时间是整段窗口（实测 4.5 小时），
     一次打爆就是全池停摆数小时；提前 10% 停手，代价只是提前换号。
     """
-    budget = settings.WINDOW_CREDIT_BUDGET
+    budget, hours, _source = credit_budget.effective(db)
     if budget <= 0 or not rows:
         return rows
-    spend = _window_credit_spend(db, [a.id for a in rows], now)
+    spend = credit_budget.spend(db, [a.id for a in rows], now, hours)
     kept = [a for a in rows if spend.get(a.id, 0.0) < budget]
     if len(kept) != len(rows):
         _logger.info("window budget: skip %d account(s) over %.0f credits / %.1fh",
-                     len(rows) - len(kept), budget, settings.WINDOW_CREDIT_HOURS)
+                     len(rows) - len(kept), budget, hours)
     return kept
 
 
@@ -1878,11 +1875,12 @@ def _no_account_reason(db: Session, account_id=None, key_id=None) -> str:
         left = max(0, int((soon - now).total_seconds()))
         return (f"全部 {len(funded)} 个账号正被上游临时限流"
                 f"（最近一个约 {left} 秒后恢复，无需人工处理）")
-    if settings.WINDOW_CREDIT_BUDGET > 0:
-        spend = _window_credit_spend(db, [a.id for a in funded], now)
-        if all(spend.get(a.id, 0.0) >= settings.WINDOW_CREDIT_BUDGET for a in funded):
-            return (f"全部 {len(funded)} 个账号已在最近 {settings.WINDOW_CREDIT_HOURS:g} 小时内"
-                    f"用满窗口预算（{settings.WINDOW_CREDIT_BUDGET:g} 积分/号）；"
+    budget, hours, _source = credit_budget.effective(db)
+    if budget > 0:
+        window_spend = credit_budget.spend(db, [a.id for a in funded], now, hours)
+        if all(window_spend.get(a.id, 0.0) >= budget for a in funded):
+            return (f"全部 {len(funded)} 个账号已在最近 {hours:g} 小时内"
+                    f"用满窗口预算（{budget:g} 积分/号）；"
                     f"这是本地主动限速，等窗口滚动后自动恢复，不需要人工处理")
     blocked = len(funded) - len(transient)
     return (f"{len(funded)} 个账号有余额，但当前都不可选"

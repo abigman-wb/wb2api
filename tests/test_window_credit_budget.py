@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from admin.config import settings
 from admin.db import SessionLocal, init_db
-from admin.models import Account, UsageLog
+from admin.models import Account, AccountModelCooldown, ApiKey, UsageLog
 from admin.routers.proxy import (
     _filter_window_budget,
     _no_account_reason,
@@ -33,11 +33,13 @@ class WindowBudgetTests(unittest.TestCase):
 
     def _clear(self):
         self.db.query(UsageLog).delete()
+        self.db.query(AccountModelCooldown).delete()
+        self.db.query(ApiKey).filter(ApiKey.account_id.is_not(None)).delete(synchronize_session=False)
         self.db.query(Account).delete()
         self.db.commit()
 
     def _account(self, name, balance=1000):
-        acc = Account(name=name, uid=name, auth_json="{}", status="active",
+        acc = Account(name=name, uid=f"{name}-{id(self)}-{name}", auth_json="{}", status="active",
                       balance_total=balance, balance_remain=balance)
         self.db.add(acc)
         self.db.commit()
