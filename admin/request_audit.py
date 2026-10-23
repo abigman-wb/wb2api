@@ -6,7 +6,8 @@ from admin.db import SessionLocal
 from admin.models import RequestAudit
 
 logger = logging.getLogger(__name__)
-INFERENCE_PATHS = frozenset(('/v1/chat/completions', '/v1/responses', '/v1/messages'))
+INFERENCE_PATHS = frozenset(('/v1/chat/completions', '/v1/responses', '/v1/messages',
+                             '/v1/images/generations', '/v1/images/edits'))
 
 
 def save(record):

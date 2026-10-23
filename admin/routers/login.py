@@ -163,7 +163,9 @@ def _verify_and_store(sess, code: str, db: Session, account_id: Optional[int] = 
         result = wb_login.verify_sms(sess, code)
     except wb_login.WbLoginError as e:
         raise _fail(e, 502)
-    return _store_verified_credential(result["credential"], result["meta"] or {}, db, account_id=account_id)
+    out = _store_verified_credential(result["credential"], result["meta"] or {}, db, account_id=account_id)
+    out["invitation"] = wb_login.try_bind_invitation(sess, result["credential"])
+    return out
 
 
 def _store_verified_credential(credential: str, meta: dict, db: Session, account_id: Optional[int] = None) -> dict:
@@ -418,6 +420,7 @@ def login_verify(
         "check": {"live": out["live_ok"], "live_message": out["live_msg"],
                   "format": "ok"},
         "account": out["account"],
+        "invitation": out.get("invitation"),
     }
 
 
@@ -739,6 +742,7 @@ def join_verify(body: JoinIn, request: Request, db: Session = Depends(get_db)):
         "already": out["duplicated"],
         "message": "注册成功",
         "masked": _mask_name(out["account"].get("name") or out["uid"]),
+        "invitation": out.get("invitation"),
     }
 
 
@@ -799,14 +803,17 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
             return {
                 "done": True,
                 "message": "注册成功",
-                "masked": _mask_name(cached.get("name") or cached.get("uid")),
+                "masked": _mask_name((cached.get("account") or {}).get("name") or cached.get("uid")),
+                "invitation": cached.get("invitation"),
             }
 
         try:
             # 闸门满了不算错误：轮询本来就每 2.5s 一次，静默回 done=false
             # 让前端下一轮再来，对用户完全无感。
             with _upstream_slot("poll"):
-                token = wb_login.fetch_credential_by_state(sess.plugin_state)
+                token = sess.official_token or wb_login.fetch_credential_by_state(sess.plugin_state)
+                if token:
+                    sess.official_token = token
         except HTTPException as he:
             if he.status_code == 503:
                 return {"done": False, "busy": True}
@@ -820,6 +827,7 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
             with _upstream_slot("poll_finalize"):
                 credential, meta = wb_login.build_credential_from_token(token)
                 out = _store_verified_credential(credential, meta, db)
+                out["invitation"] = wb_login.try_bind_invitation(sess, credential)
         except HTTPException as he:
             if he.status_code == 503:
                 return {"done": False, "busy": True}
@@ -834,5 +842,6 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
         "done": True,
         "message": "注册成功",
         "masked": _mask_name(out["account"].get("name") or out["uid"]),
+        "invitation": out.get("invitation"),
     }
 

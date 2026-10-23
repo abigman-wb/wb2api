@@ -39,6 +39,8 @@ import codecs
 import json
 import re
 
+from repository_instructions import rewrite_non_repository_text
+
 # ---------------------------------------------------------------------------
 # 1. 模型目录解析（能力层）
 # ---------------------------------------------------------------------------
@@ -757,6 +759,11 @@ def has_fingerprint(text: str) -> bool:
 
 def sanitize_text(text: str) -> str:
     """对单段文本做指纹脱敏。无命中时原样返回（零改写）。"""
+    rewritten = rewrite_non_repository_text(text, _sanitize_non_repository_text)
+    return rewritten.strip() if rewritten != text else text
+
+
+def _sanitize_non_repository_text(text: str) -> str:
     if not has_fingerprint(text):
         return text
     for src, dst in SANITIZE_REWRITES:
@@ -770,7 +777,7 @@ def sanitize_text(text: str) -> str:
             prev = text
             text = _KV_RE.sub("", text)
     text = _BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
-    return text.strip()
+    return text
 
 
 def _sanitize_content(content):
@@ -1129,6 +1136,11 @@ _HARNESS_GUI_REPLACEMENT = (
 
 
 def _normalize_harness_identity_text(text):
+    # These fixed identity templates also fail inside system AGENTS.md sections.
+    return _normalize_harness_identity_fragment(text)
+
+
+def _normalize_harness_identity_fragment(text):
     text, count = _HARNESS_IDENTITY_RE.subn("Your role is", text)
     # Reproduced from DSH Desktop 0.2.1-rc.2's shipped Web GUI paragraph:
     # original -> 400/11128, this sentence alone neutralized -> 200,
@@ -1184,12 +1196,15 @@ def normalize_prompt_templates(obj: dict) -> int:
             continue
         for key, value in items:
             if isinstance(value, str):
-                for source, replacement in _PROMPT_TEMPLATE_REWRITES:
-                    occurrences = value.count(source)
-                    if occurrences:
-                        value = value.replace(source, replacement)
-                        count += occurrences
-                container[key] = value
+                def rewrite(text):
+                    nonlocal count
+                    for source, replacement in _PROMPT_TEMPLATE_REWRITES:
+                        occurrences = text.count(source)
+                        if occurrences:
+                            text = text.replace(source, replacement)
+                            count += occurrences
+                    return text
+                container[key] = rewrite(value)
             elif isinstance(value, (dict, list)):
                 pending.append(value)
     return count

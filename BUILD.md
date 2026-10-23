@@ -17,7 +17,7 @@
 .\build.bat --jdk C:\Tools\jdk-17 --sdk C:\Tools\android-sdk --gradle C:\Tools\gradle-8.11.1\bin\gradle.bat
 ```
 
-版本唯一来源是 `desktop/version.json`。当前发布版本为 1.14.0，更新源为 [新仓库](https://github.com/xiaofan6ya/wb2api)。需要修改版本时使用 `--version X.Y.Z`，三个部分必须为数字，次版本号和修订号小于 1000。构建不会自动拉取、提交、推送或发布。
+版本唯一来源是 `desktop/version.json`。当前发布版本为 1.15.0，更新源为 [新仓库](https://github.com/xiaofan6ya/wb2api)。需要修改版本时使用 `--version X.Y.Z`，三个部分必须为数字，次版本号和修订号小于 1000。构建不会自动拉取、提交、推送或发布。
 
 ## 产物
 

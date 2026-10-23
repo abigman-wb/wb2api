@@ -454,11 +454,13 @@ class CredentialManager:
                     r = c.post(url, headers=headers, json=json_body or {}, **request_options)
         except Exception as e:
             raise RuntimeError(f"后端请求网络失败 {method} {path}: {e}")
+        if r.status_code != 200:
+            raise UpstreamError(f"后端请求失败 {method} {path}", r.status_code, r.text)
         try:
             data = r.json()
         except Exception as e:
             raise UpstreamError(f"后端返回非 JSON {method} {path}", r.status_code, r.text) from e
-        if r.status_code != 200 or data.get("code") != 0:
+        if not isinstance(data, dict) or data.get("code") != 0:
             raise UpstreamError(f"后端请求失败 {method} {path}", r.status_code, r.text)
         return data
 

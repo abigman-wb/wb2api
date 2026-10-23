@@ -698,7 +698,7 @@
 .upload-result{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg-muted)}
 @media(max-width:480px){.upload-footer{gap:10px}.upload-footer-note{flex-basis:100%;order:3}.upload-file-input::file-selector-button{padding:8px 10px;margin-right:8px}}
   </style>
-  <link rel="stylesheet" href="/static/console.css" />
+  <link rel="stylesheet" href="/static/console.css?v=20261023-invitation-settings-3" />
   <link rel="icon" href="/api/app/icon" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/desktop.css" />
   <script>if(new URLSearchParams(location.search).get('desktop')==='1') document.documentElement.classList.add('desktop-mode');</script>
@@ -922,6 +922,11 @@
             <p class="mt-2 leading-relaxed">POST <code>/v1/audio/transcriptions</code>，使用同一 API Key。以 multipart/form-data 上传 <code>file</code>，<code>model=workbuddy-asr</code>。<code>response_format</code> 可选 json（默认，返回 <code>{"text":"识别内容"}</code>）或 text。网关文件上限 25 MiB，不支持 language、prompt、时间戳或流式转写。无语音时成功返回空文本，不保存音频、转写内容及调用日志。沿用 Key 状态、配额准入、频率与并发限制；绑定 Key 使用绑定账号，公共 Key 使用健康账号池。上游限额仍以上游为准。</p>
             <pre id="shareCurlAudio" class="api-example mt-2 rounded-lg p-3 overflow-x-auto text-[11px] whitespace-pre"></pre>
             <pre id="sharePythonAudio" class="api-example mt-2 rounded-lg p-3 overflow-x-auto text-[11px] whitespace-pre"></pre>
+          </details>
+          <details class="text-xs text-slate-500">
+            <summary class="cursor-pointer text-wb select-none">AI 生图 · 文生图 / 图生图（OpenAI 兼容）</summary>
+            <p class="mt-2 leading-relaxed">文生图使用 <code>POST /v1/images/generations</code>，图生图使用 <code>POST /v1/images/edits</code>。指定已启用且有权限的生图模型，例如 <code>hunyuan-image-alpha</code>。图生图支持上传一张 <code>image</code> 文件（最大 20 MiB），也可通过 JSON 传入 <code>image_url</code> 或 base64 <code>image_data</code>。返回格式支持 url（默认）和 b64_json；尺寸、数量和风格以上游模型能力为准，暂不支持 mask、流式或多图输入。调用沿用 Key 限额、模型分组、账号绑定及并发保护，成功后记录真实积分用量。</p>
+            <pre id="sharePythonImages" class="api-example mt-2 rounded-lg p-3 overflow-x-auto text-[11px] whitespace-pre"></pre>
           </details>
         </div>
       </div>
@@ -1469,13 +1474,29 @@
     </section>
     <!-- 设置面板 -->
     <section id="panel-settings" class="hidden">
-      <h2 class="font-semibold mb-3">管理员设置</h2>
-      <div class="card p-5 max-w-md browser-password-settings">
-        <h3 class="text-sm font-medium mb-3">修改登录密码</h3>
-        <input id="oldPwd" type="password" class="w-full border rounded-lg px-3 py-2 mb-2 text-sm" placeholder="当前密码" />
-        <input id="newPwd" type="password" class="w-full border rounded-lg px-3 py-2 mb-2 text-sm" placeholder="新密码（≥6 位）" />
-        <input id="newPwd2" type="password" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm" placeholder="确认新密码" />
-        <button onclick="changePassword()" class="px-3 py-1.5 rounded-lg btn-primary text-sm">保存新密码</button>
+      <h2 class="settings-title">管理员设置</h2>
+      <div class="settings-section">
+        <h3>WorkBuddy 邀请绑定</h3>
+        <div class="settings-fields">
+          <div class="settings-field">
+            <label for="invitationInput">邀请码 / 邀请链接</label>
+            <input id="invitationInput" maxlength="2048" placeholder="邀请码或 WorkBuddy 官方邀请链接" autocomplete="off" />
+          </div>
+          <div class="settings-actions">
+            <button id="invitationSave" onclick="saveInvitation()" class="console-btn primary"><i class="fa-solid fa-floppy-disk"></i>保存</button>
+            <button onclick="clearInvitation()" class="console-btn">停用</button>
+            <span id="invitationStatus" class="settings-status" role="status"></span>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section browser-password-settings">
+        <h3>修改登录密码</h3>
+        <div class="settings-fields">
+          <div class="settings-field"><label for="oldPwd">当前密码</label><input id="oldPwd" type="password" autocomplete="current-password" /></div>
+          <div class="settings-field"><label for="newPwd">新密码</label><input id="newPwd" type="password" placeholder="至少 6 位" autocomplete="new-password" /></div>
+          <div class="settings-field"><label for="newPwd2">确认新密码</label><input id="newPwd2" type="password" autocomplete="new-password" /></div>
+          <div class="settings-actions"><button onclick="changePassword()" class="console-btn primary"><i class="fa-solid fa-floppy-disk"></i>保存新密码</button></div>
+        </div>
       </div>
 
       <!-- 逆向产物（开发/测试环境工具） -->
@@ -1571,7 +1592,7 @@
 
 <link rel="stylesheet" href="/static/phone-region.css" />
 <script src="/static/phone-session.js"></script>
-<script src="/static/model-metadata.js"></script>
+<script src="/static/model-metadata.js?v=20261023-image-types-2"></script>
 <script src="/static/usage-ip.js"></script>
 <script>
 let _confirmResolve = null;
@@ -1757,6 +1778,35 @@ async function api(path, opts = {}) {
   }
   return response;
 }
+async function loadInvitation() {
+  try {
+    const {ok, data} = await safeJson(await api('/api/settings/invitation'));
+    if (!ok) throw new Error(data.detail || '读取邀请设置失败');
+    $('#invitationInput').value = data.invite_code || '';
+    $('#invitationStatus').textContent = data.enabled ? '已启用' : '未启用';
+  } catch (e) { $('#invitationStatus').textContent = e.message; }
+}
+async function saveInvitation() {
+  const btn = $('#invitationSave');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const {ok, data} = await safeJson(await api('/api/settings/invitation', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({value:$('#invitationInput').value})
+    }));
+    if (!ok) throw new Error(typeof data.detail === 'string' ? data.detail : '保存失败');
+    $('#invitationInput').value = data.invite_code || '';
+    $('#invitationStatus').textContent = data.enabled ? '已启用' : '未启用';
+    toast(data.enabled ? '邀请绑定已保存' : '邀请绑定已停用');
+  } catch (e) { toast(e.message, 'err'); }
+  finally { btn.disabled = false; }
+}
+async function clearInvitation() {
+  if ($('#invitationSave').disabled) return;
+  $('#invitationInput').value = '';
+  await saveInvitation();
+}
 async function safeJson(r) {
   /* 容错解析：后端偶发返回非 JSON（如 500 明文）时，避免报 "Unexpected token" 崩溃 */
   const t = await r.text();
@@ -1928,7 +1978,7 @@ function activateTab(name, opts) {
   if (name === "credits") loadCreditStats();
   if (name === "logs") openLogsPanel();
   if (name === "client") loadClientProfile();
-  if (name === "settings") loadAppSource();
+  if (name === "settings") { loadAppSource(); loadInvitation(); }
   if (name === "models") loadModels();
   if (name === "growth") window.WBGrowthCenter?.enter();
   scheduleModelBusy();
@@ -2397,7 +2447,7 @@ function accRow(a) {
         <span class="c-uid" title="${esc(a.uid || "")}">${esc(a.uid || "-")}</span>
         ${a.bound_key_id ? `<small class="text-indigo-600">Key 独占：${esc(a.bound_key_name || ("#" + a.bound_key_id))}</small>` : ''}
         ${a.post_login_automation ? `<small style="color:var(--fg-muted)" title="${esc((a.post_login_automation.result?.errors || []).join('；'))}">${esc(({queued:'自动任务排队中',running:'自动任务执行中',completed:'自动任务已完成',failed:'部分自动任务未完成'})[a.post_login_automation.status] || '')}</small>` : ''}
-          ${a.resource_initialization && a.resource_initialization.status !== 'completed' ? `<small style="color:var(--fg-muted)" title="${esc((a.resource_initialization.errors || []).join('；'))}">${esc(({queued:'余额与模型初始化排队中',running:'正在初始化余额与模型',failed:'初始化未完成，可刷新余额或同步模型',invalid_credential:'账号凭证不完整，请重新导入或授权登录'})[a.resource_initialization.status] || '')}</small>` : ''}
+          ${a.resource_initialization && a.resource_initialization.status !== 'completed' ? `<small style="color:var(--fg-muted)" title="${esc((a.resource_initialization.errors || []).join('；'))}">${esc(({queued:'余额与模型初始化排队中',running:'正在初始化余额与模型',failed:'初始化未完成，可刷新余额或同步模型',invalid_credential:'账号凭证不完整，请重新导入或授权登录',unsupported_region:'国际版凭证无法访问当前国内接口，请更换国内版凭证',auth_required:'上游鉴权失败，请重新授权登录'})[a.resource_initialization.status] || '')}</small>` : ''}
       </div>
     </td>
     <td class="col-status" data-label="状态">${badge(a.status)}${accountLimitBadge(a)}</td>
@@ -4073,7 +4123,8 @@ async function plVerify(){
       $("#plResultIcon").innerHTML = '<i class="fa-solid fa-circle-check text-emerald-500"></i>';
       $("#plResultMsg").innerHTML = `<div class="font-medium text-emerald-700">${esc(data.message || "登录成功")}</div>
         <div class="text-slate-500 mt-1 text-xs">账号：${esc((data.account && data.account.name) || "-")}${data.uid ? " · UID " + esc(data.uid) : ""}</div>
-        ${ck.live_message ? `<div class="text-emerald-600 mt-1 text-xs"><i class="fa-solid fa-shield-halved mr-1"></i>${esc(ck.live_message)}</div>` : ""}`;
+        ${ck.live_message ? `<div class="text-emerald-600 mt-1 text-xs"><i class="fa-solid fa-shield-halved mr-1"></i>${esc(ck.live_message)}</div>` : ""}
+        ${data.invitation && data.invitation.status !== 'disabled' ? `<div class="mt-1 text-xs">${esc(data.invitation.message)}</div>` : ""}`;
       if(_plTimer){ clearInterval(_plTimer); _plTimer = null; }
       loadAccounts();
     } else {
@@ -4449,6 +4500,15 @@ function renderShareAddress(origin) {
     '    result = client.audio.transcriptions.create(model="workbuddy-asr", file=audio)',
     'print(result.text)'
   ].join('\n');
+  if ($('#sharePythonImages')) $('#sharePythonImages').textContent = [
+    'from openai import OpenAI',
+    `client = OpenAI(api_key="<你的 Key>", base_url="${base}")`,
+    'result = client.images.generate(model="hunyuan-image-alpha", prompt="白色背景上的蓝色圆形", n=1)',
+    'print(result.data[0].url)',
+    'with open("input.png", "rb") as image:',
+    '    edited = client.images.edit(model="hunyuan-image-alpha", image=image, prompt="把圆形改成绿色")',
+    'print(edited.data[0].url)'
+  ].join('\n');
   if ($("#shareCurl")) {
     $("#shareCurl").textContent =
       "curl " + base + "/chat/completions \\\n" +
@@ -4778,14 +4838,17 @@ window.addEventListener('pageshow',refreshModelPromotions);
 document.addEventListener('visibilitychange',refreshModelPromotions);
 function modelRow(m) {
   const info=WBModelMetadata.display(m);
+  info.kind=m.model_type||info.kind||(/^hunyuan-image-/i.test(m.model_id||'')?'image':'text');
+  if(info.kind==='image') { info.price=null; info.base=null; }
   const isFree = info.price === 0;
   const mult = info.price;
-  const multDisplay = isFree ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">FREE</span>'
+  const typeTag=`<span class="model-type-tag ${info.kind}" title="${info.kind==='image'?'图片生成模型':'文本输出模型'}"><i class="fa-solid ${info.kind==='image'?'fa-image':'fa-font'}" aria-hidden="true"></i>${info.kind==='image'?'IMAGE':'TEXT'}</span>`;
+  const multDisplay = info.kind==='image' ? '<span class="text-xs text-slate-500" title="按上游返回的 usage.credit 记账">按实际用量</span>' : isFree ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">FREE</span>'
     : `<span class="text-amber-600 font-medium">${mult==null?'未知':'×'+mult.toFixed(2)}</span>`;
   const original=info.discountMode==='strikethrough'&&info.base!=null&&info.base!==mult?`<del class="model-original-price">×${info.base.toFixed(2)}</del>`:'';
   return `
     <tr class="border-t hover:bg-slate-50">
-      <td class="px-4 py-3 font-mono text-xs"><span tabindex="0" class="model-id-description" data-model-tooltip="${esc(m.model_id)}" data-tooltip="${esc(m.model_id)}" data-tooltip-description="${esc(info.description || '上游暂未提供模型描述')}">${esc(m.model_id)}</span><div class="model-promotion-row">${modelPromotionBadges(info)}</div></td>
+      <td class="px-4 py-3 font-mono text-xs"><span tabindex="0" class="model-id-description" data-model-tooltip="${esc(m.model_id)}" data-tooltip="${esc(m.model_id)}" data-tooltip-description="${esc(info.description || '上游暂未提供模型描述')}">${esc(m.model_id)}</span><div class="model-promotion-row">${typeTag}${modelPromotionBadges(info)}</div></td>
       <td class="px-4 py-3">${m.level==='system'?'<span class="px-2 py-0.5 rounded text-[10px] bg-blue-100 text-blue-700">系统</span>':'<span class="px-2 py-0.5 rounded text-[10px] bg-purple-100 text-purple-700">用户</span>'}</td>
       <td class="px-4 py-3 model-mult-column">${original}${multDisplay}</td>
       <td class="px-4 py-3 whitespace-nowrap model-busy-column">${modelBusyBadge(m)}</td>
@@ -4793,7 +4856,7 @@ function modelRow(m) {
       <td class="px-4 py-3 text-slate-400 text-xs">${esc(m.note||'-')}</td>
       <td class="px-4 py-3 col-status">${m.enabled?'<span class="badge bg-emerald-100 text-emerald-700">启用</span>':'<span class="badge bg-slate-100 text-slate-500">禁用</span>'}</td>
       <td class="px-4 py-3 text-right whitespace-nowrap">
-        <button onclick="speedTestModel(${esc(JSON.stringify(m.model_id))}, this)" class="text-sky-600 hover:text-sky-800 text-sm mr-2" title="检测模型延迟与健康（真实请求，可能消耗少量积分）"><i class="fa-solid fa-gauge-high"></i></button>
+        <button onclick="speedTestModel(${esc(JSON.stringify(m.model_id))}, this)" ${info.kind==='image'?'disabled':''} class="text-sky-600 hover:text-sky-800 text-sm mr-2 disabled:opacity-30 disabled:cursor-not-allowed" title="${info.kind==='image'?'图片模型不支持文本测速':'检测模型延迟与健康（真实请求，可能消耗少量积分）'}"><i class="fa-solid fa-gauge-high"></i></button>
         <button onclick="toggleModel(${m.id},${!m.enabled})" class="${m.enabled?'text-amber-600 hover:text-amber-800':'text-emerald-600 hover:text-emerald-800'} text-sm mr-2" title="${m.enabled?'禁用':'启用'}"><i class="fa-solid ${m.enabled?'fa-ban':'fa-check'}"></i></button>
         <button onclick="deleteModelConfig(${m.id})" class="text-red-500 hover:text-red-700" title="移除"><i class="fa-solid fa-trash"></i></button>
       </td>
@@ -5837,6 +5900,7 @@ function requestPhaseLabel(phase) {
   if (/gateway_wait_concurrent/.test(phase)) return '等待此 Key 的并发空位';
   if (/gateway_wait_requests_per_minute/.test(phase)) return '等待此 Key 的频率额度';
   if (/request_timeout/.test(phase)) return '超过总时限已回收';
+  if (/account_capacity_wait/.test(phase)) return '等待账号空位（公平队列）';
   if (/upstream_dispatch_wait|upstream_queue/.test(phase)) return '等待上游发车';
   if (/send_request_body/.test(phase)) return '上传到上游';
   if (/receive_response_headers/.test(phase)) return '等待上游首响应';

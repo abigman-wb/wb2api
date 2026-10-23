@@ -76,7 +76,7 @@ def prepare() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
     for name in ("upstream_compat.py", "anthropic_adapter.py", "responses_adapter.py",
-                 "responses_projection.py", "desensitize.py", "wb_install.py", "converter.py", "model_metadata.py"):
+                 "responses_projection.py", "desensitize.py", "repository_instructions.py", "wb_install.py", "converter.py", "model_metadata.py"):
         shutil.copy2(ROOT / name, staging / name)
     (staging / "desktop/assets").mkdir(parents=True)
     for name in ("__init__.py", "common.py", "runtime.py", "updates.py"):

@@ -123,7 +123,7 @@ class Settings:
     UPSTREAM_CLIENT_NAME = os.getenv("ADMIN_UPSTREAM_CLIENT_NAME", "WorkBuddy")
 
     # Initial automatic strategy; console changes persist in SystemSetting.
-    # expiry_weighted / expiring / lru / weighted / remain / oldest
+    # throughput / expiry_weighted / expiring / lru / weighted / remain / oldest
     ACCOUNT_SELECT = os.getenv("ADMIN_ACCOUNT_SELECT", "expiry_weighted")
 
     # ---------- 开发 / 测试辅助工具 ----------

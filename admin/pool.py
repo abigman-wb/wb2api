@@ -180,6 +180,8 @@ class InFlight:
                 self._counts.pop(uid, None)
             else:
                 self._counts[uid] = cur - 1
+        from admin.capacity_queue import notify_capacity
+        notify_capacity()
 
     def count(self, uid: str) -> int:
         with self._lock:
@@ -204,6 +206,8 @@ class InFlight:
     def release_maintenance(self, uid: str) -> None:
         with self._lock:
             self._maintenance.discard(uid)
+        from admin.capacity_queue import notify_capacity
+        notify_capacity()
 
     def maintenance_count(self) -> int:
         with self._lock:

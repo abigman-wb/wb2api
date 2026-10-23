@@ -21,10 +21,12 @@ const WBModelMetadata = (() => {
   }
   function display(model, now=new Date()) {
     const meta=model.metadata||model, rules=(meta.promotions||[]).filter(p=>p&&p.enabled!==false);
+    const kind=model.model_type||(/^hunyuan-image-/i.test(model.model_id||model.id||'')||
+      (Array.isArray(meta.tags)&&meta.tags.some(tag=>['text-to-image','image-to-image'].includes(tag)))?'image':'text');
     const enabled=rules.filter(p=>active(p,now));
     const rule=(enabled.length?enabled:rules).slice().sort((a,b)=>(Number(b.priority)||0)-(Number(a.priority)||0))[0];
     const isActive=!!rule&&enabled.includes(rule), badge=rule?.badge||{}, discount=rule?.discount||{};
-    const base=credit(meta.credits??model.credits_raw)??model.credit_multiplier??null;
+    const base=kind==='image'?null:credit(meta.credits??model.credits_raw)??model.credit_multiplier??null;
     let price=base;
     if(isActive&&rule.kind==='discount'){
       const explicit=credit(discount.discountedCredits);
@@ -40,7 +42,7 @@ const WBModelMetadata = (() => {
       const match=tag.match(/^badge:([^:]+)(?::(#[0-9a-f]{3,8}))?$/i);
       if(match&&!badges.some(b=>b.label===match[1])) badges.push({label:match[1],color:match[2]});
     }
-    return {name:meta.name||model.model_id||model.id,description:meta.descriptionZh||meta.description||meta.descriptionEn||model.description||'',
+    return {kind,name:meta.name||model.model_id||model.id,description:meta.descriptionZh||meta.description||meta.descriptionEn||model.description||'',
       badges,footer:isActive?(rule.hover?.textZh||rule.hover?.textEn||''):'',
       base,price,discountMode:isActive?discount.displayMode:'replace'};
   }

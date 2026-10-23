@@ -18,6 +18,7 @@ _windows = {}
 _active = {}
 _waiters = {}
 _total_waiters = 0
+_signals = {}
 _redis = None
 _redis_initialized = False
 _redis_lock = threading.Lock()
@@ -139,11 +140,22 @@ def allow(key, rate=None, concurrent=None):
     return Admission(key)
 
 
+def _notify_release(key):
+    with _lock:
+        signals = list(_signals.get(key, ()))
+    for loop, event in signals:
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass
+
+
 def release(admission):
     if not admission or not admission.key:
         return
     if admission.client is not None:
         admission.client.zrem(_keys(admission.key)[1], admission.token)
+        _notify_release(admission.key)
         return
     with _lock:
         if admission.released:
@@ -156,6 +168,7 @@ def release(admission):
             _active[admission.key] = current - 1
         if admission.key in _windows and not _windows[admission.key]:
             _windows.pop(admission.key, None)
+    _notify_release(admission.key)
 
 
 def snapshot():
@@ -254,6 +267,9 @@ class GatewayAdmissionMiddleware:
             _total_waiters += 1
         started = time.monotonic()
         deadline = started + self.wait_timeout
+        signal = (asyncio.get_running_loop(), asyncio.Event())
+        with _lock:
+            _signals.setdefault(key, []).append(signal)
         try:
             if start_monitor is not None:
                 start_monitor()
@@ -268,7 +284,12 @@ class GatewayAdmissionMiddleware:
                 delay = result[1] if reason == 'requests_per_minute' else random.uniform(.2, .4)
                 wake = time.monotonic() + min(remaining, delay)
                 while True:
-                    await asyncio.sleep(min(.5, max(0, wake - time.monotonic())))
+                    try:
+                        await asyncio.wait_for(signal[1].wait(), min(.5, max(0, wake - time.monotonic())))
+                    except asyncio.TimeoutError:
+                        pass
+                    notified = signal[1].is_set()
+                    signal[1].clear()
                     row = await _finish_thread(check_key_current, key)
                     if row is not None:
                         global_rate, global_concurrent = _limits()
@@ -277,7 +298,7 @@ class GatewayAdmissionMiddleware:
                         if (rate, concurrent) != (next_rate, next_concurrent):
                             rate, concurrent = max(0, next_rate), max(0, next_concurrent)
                             break
-                    if time.monotonic() >= wake:
+                    if notified or time.monotonic() >= wake:
                         break
                 result = await self._acquire_once(key, rate, concurrent)
             request_metrics.set_phase('gateway_admission')
@@ -285,6 +306,11 @@ class GatewayAdmissionMiddleware:
         finally:
             request_metrics.add_stage('gateway_queue_wait', (time.monotonic() - started) * 1000)
             with _lock:
+                signals = _signals.get(key, [])
+                if signal in signals:
+                    signals.remove(signal)
+                if not signals:
+                    _signals.pop(key, None)
                 _total_waiters = max(0, _total_waiters - 1)
                 count = _waiters.get(key, 1) - 1
                 if count:

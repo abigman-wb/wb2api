@@ -410,6 +410,8 @@ OpenAI 使用 `Authorization: Bearer <API Key>`；Anthropic 可使用 `x-api-key
 | `POST /v1/responses` | OpenAI Responses，面向 Responses 兼容客户端 |
 | `POST /v1/messages` | Anthropic Messages，包含工具消息与思考参数兼容处理 |
 | `POST /v1/messages/count_tokens` | Anthropic token 数量本地估算，不请求上游模型 |
+| `POST /v1/images/generations` | AI 文生图，JSON 请求 |
+| `POST /v1/images/edits` | AI 图生图，支持单张图片上传或 JSON 图片来源 |
 
 独立 converter 另外提供 `/v1/balance` 和 `/health`。这些端点不代表共享账号池的总余额或健康状态。
 
@@ -441,6 +443,34 @@ print(result.choices[0].message.content)
 
 SDK 示例需自行安装 `openai`。从其他设备访问时，用 API Keys 页面复制的局域网或服务器地址替换 `127.0.0.1`，保留实际端口。
 
+### AI 生图
+
+生图使用同一套 API Key、模型启停与分组权限、独占账号绑定和并发保护。模型需要明确指定，不能使用 `auto`；例如 `hunyuan-image-alpha`。其他生图模型是否支持某个端点、尺寸、数量和风格，以上游实际能力为准。
+
+模型列表使用 `IMAGE` / `TEXT` 标签区分输出类型。图片模型按上游返回的 `usage.credit` 实际积分记账，不套用文本模型的每千 token 倍率；目录未给价格不代表免费。2026-10-23 单张 `hunyuan-image-alpha` 实测文生图和图生图均返回 5.71 积分，此数字仅为当次实测，不是固定价格。
+
+```python
+image = client.images.generate(
+    model="hunyuan-image-alpha",
+    prompt="白色背景上的蓝色圆形",
+    n=1,
+    response_format="url",
+)
+print(image.data[0].url)
+
+with open("input.png", "rb") as source:
+    edited = client.images.edit(
+        model="hunyuan-image-alpha",
+        image=source,
+        prompt="把圆形改成绿色，保留白色背景",
+    )
+print(edited.data[0].url)
+```
+
+`/v1/images/generations` 使用 JSON，`/v1/images/edits` 可使用 `multipart/form-data` 上传 `image` 文件，也可使用 JSON 传入一个 HTTPS `image_url` 或 base64 `image_data`。当前支持一张输入图片，单图最大 20 MiB，请求体最大 32 MiB；不支持 mask、流式和多图输入。参数支持 `model`、`prompt`、`n`、`size`、`quality`、`style`、`response_format`、`user`，具体取值仍由模型校验。
+
+返回格式支持 `url`（默认）和 `b64_json`。上游返回 URL 时，网关可将腾讯 COS 图片转换为 base64；转换失败仍返回 HTTP 200，在 `warning.code` 中标记 `image_conversion_failed`，并在 `data` 中保留已生成图片地址，避免 SDK 因 5xx 自动重复生图。成功生成的图片按真实上游积分记账。网络超时或 5xx 不自动重发生图，避免结果不明时重复生成和扣费。用量记录区分 `images/generations` 与 `images/edits`。
+
 ### Codex CLI（Responses）
 
 在现有配置中合并一个 provider 和 profile，模型填写后台当前启用且账号有权限的 ID：
@@ -468,6 +498,8 @@ codex --profile wb
 PowerShell 使用 `$env:WB2API_API_KEY='<API_KEY>'` 设置环境变量。共享网关必须使用有效 Key，不能用任意占位字符串代替。
 
 ### Claude Code / CC Switch（Anthropic）
+
+原有 Opus / Sonnet / Haiku 映射及思考档位保持不变。兼容 `thinking.effort`、`output_config.effort`、`reasoning_effort`、`reasoningEffort` 和 `reasoning.effort`；只传 `thinking.type=adaptive` 或 `enabled` 而未传档位时，沿用默认 `high`，明确关闭时保持关闭。用量日志记录实际转发档位。客户端界面选择若未进入请求体，网关无法还原该选择。
 
 Anthropic Base URL 填 `http://127.0.0.1:8790`，不附加 `/v1` 或 `/v1/messages`，由 SDK 拼接路径。将当前进程的连接变量设置为：
 
@@ -522,7 +554,7 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | `ADMIN_JOIN_MAX_CONCURRENT` | 注册接口最大并发数，超过后快速返回重试提示，默认 `4` |
 | `ADMIN_BACKEND` | 上游服务地址；保留实际域名，默认值以配置模板和源码为准 |
 | `ADMIN_CLIENT_AUTH_DIR` | 扫描和切换本机账号时读取的凭证目录 |
-| `ADMIN_ACCOUNT_SELECT` | `expiring`（默认）/ `oldest` / `remain` / `lru` / `weighted` |
+| `ADMIN_ACCOUNT_SELECT` | `expiry_weighted`（默认）/ `throughput` / `expiring` / `oldest` / `remain` / `lru` / `weighted`；控制台保存的策略优先 |
 | `ADMIN_POOL_MAX_IN_FLIGHT` | 单账号最大在途请求数，默认 `3` |
 | `ADMIN_POOL_MAX_ROTATE` / `ADMIN_POOL_MAX_TOTAL_ATTEMPTS` | 单请求的换号与总尝试次数上限，默认均为 `6` |
 | `ADMIN_POOL_RETRY_WINDOW` | 输出前重试窗口，默认 `90` 秒，不中断已经活跃的流 |
@@ -537,12 +569,16 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 
 `ADMIN_CLIENT_AUTH_DIR` 用于后台扫描/切换账号，独立 converter 的凭证目录另行配置，二者不能混为一项。服务用户与桌面登录用户不同的 Windows 部署，应填写该用户可读的绝对路径，避免 `%LOCALAPPDATA%` 指向系统账户目录。
 
+DSH 等客户端通过 `<system-reminder>` 注入 `Instructions from: …/AGENTS.md:` 时，网关会把对应正文单独提取保留，不参与可选文本脱敏、运行时摘要或 Responses 历史截断；同一请求里的多份规则按出现顺序保留。已确认导致上游拒绝的固定身份句和模板短语仍执行必要的兼容归一，避免 system 消息中的规则触发 `11128`，项目指令不会整段删除。来源标题中的本地路径会省略，其余运行时元数据继续按原配置处理，消息角色与图片附件保持原有语义。此处理覆盖 Chat、Responses 和 Messages 接口，无需手动复制规则到每个会话。
+
 ## 稳定性与流量治理
 
 | 机制 | 行为 | 实现位置 |
 | --- | --- | --- |
 | 账号选择 | 先按积分到期紧迫度筛选，再执行余额、LRU 或加权等策略 | `admin/pool.py`、`admin/credits.py` |
 | 在途租约 | 单账号并发上限，结束或失败时释放资源 | `admin/pool.py`、`admin/routers/proxy.py` |
+| 公平容量队列 | 按 Key 轮转选号与原子占位；相同等待范围合并探测，释放时立即唤醒；最多 512 个等待者、每 Key 64 个 | `admin/capacity_queue.py` |
+| 吞吐优先策略 | 先选并发占用比例最低的账号，同负载保留粘性，再考虑积分到期与闲置 | `admin/routing_policy.py`、`admin/routers/proxy.py` |
 | 会话粘性 | 尽量让同会话使用同一账号，降低多轮切换 | `admin/pool.py` |
 | 独占账号 | 公共池与绑定 Key 使用不同的账号范围 | `admin/account_binding.py` |
 | 错误分类 | 区分凭证、余额、模型限额、账号限速、出口保护和网络错误 | `admin/routers/proxy.py`、`admin/health.py` |
@@ -554,6 +590,10 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | 分级超时 | 连接、读取、写入、连接池分别设置；流式按静默时间判断 | `admin/routers/proxy.py` |
 
 增加换号次数可能延长失败请求的等待时间，不能消除上游限额。已经向客户端输出的流无法通过服务端换号无缝续接；上游中途失败时，客户端仍可能需要重试。
+
+多人共享 Key 时，可在积分到期页面把自动选号切到“吞吐优先”，并在 Key 页面为共享 Key 单独设置并发和 RPM。全局默认仍是每 Key 4 路并发、60 次/分钟；调度优化不会自动扩大现有权限。可先从共享 Key 16 路并发、240 次/分钟开始观察，再根据健康账号数、首字延迟、429 和排队 P95 调整；单账号默认 3 路和每账号 75ms 启动间隔继续保留。公平排队让不同 Key 轮流获得新空位，已启动的长请求不会被抢占；满池时仍需要等待，要求硬隔离可使用独占账号绑定。
+
+账号租约和容量公平队列均为进程内状态，建议单个网关 worker 管理共享池。Redis 可共享 Key 准入和账号发车时钟，但不会把账号租约变成跨进程租约。多 worker 部署不能把每进程上限误认为全局账号上限。日志中的 `account_queue_wait`、`gateway_queue_wait`、`upstream_queue_wait` 可分别识别账号容量、Key 准入和发车间隔的等待。
 
 ## 日志与常见问题
 
