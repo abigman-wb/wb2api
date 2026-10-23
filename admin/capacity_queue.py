@@ -6,10 +6,10 @@ another request's Session, so cancellation can safely drain its own SQL work.
 Fairness is process-local, like the account leases themselves.
 """
 import asyncio
-from collections import deque
 import threading
 import time
 import weakref
+from collections import deque
 
 from admin.security import GatewayRejected
 

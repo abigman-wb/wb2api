@@ -1,11 +1,11 @@
 """Opt-in expiring process cache; request content never enters the database."""
-from collections import OrderedDict
-from datetime import datetime, timezone
-import json
 import codecs
+import json
 import re
 import threading
 import time
+from collections import OrderedDict
+from datetime import datetime, timezone
 
 from admin.config import settings
 from admin.request_metrics import current

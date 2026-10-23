@@ -1,9 +1,9 @@
 """OpenAI Images API over the account pool and official /v2/images routes."""
 import base64
-from contextlib import asynccontextmanager
 import json
 import math
 import time
+from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
 import httpx
