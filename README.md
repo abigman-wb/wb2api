@@ -16,7 +16,6 @@
 | 积分到期 | 逐账号积分包快照、临近到期排行、到期风险与消耗构成 |
 | 成长任务 | 查看任务、参与、执行可自动化任务、领取奖励、查看逐账号执行结果 |
 | 成长计划 | 连续登录、能量、活跃地图、年度热力图、宠物图鉴、盲盒与领取记录 |
-| 权益获取 | 每日检查官方可领取权益并自动领取；保留 DeepSeek 补偿 500 积分一次性批量操作（2026/10/22 截止） |
 | 定时任务 | 签到、刷新余额/到期快照、同步模型、成长任务、成长计划巡检与 token 保活 |
 | 使用记录与日志 | 按 Key、账号、模型、端点查询用量、token、耗时及错误，查看趋势和汇总 |
 | 客户端参数与同步 | 管理客户端版本/请求参数档案，将本机配置与账号同步到其他部署 |
@@ -114,8 +113,6 @@ wb2api/
 │   ├── growth_plans.py          # 成长任务完成策略
 │   ├── growth_plan.py           # 成长计划日常巡检
 │   ├── growth_center.py         # 成长中心快照与操作记录
-│   ├── compensation.py          # 限时补偿权益、领取去重与自动巡检
-│   ├── benefits.py              # 每日权益获取与旧专属任务迁移
 │   ├── scheduler.py             # 定时任务与 token 保活
 │   ├── jobrunner.py             # 批量后台任务与进度
 │   ├── client_profile.py       # 客户端参数档案
@@ -334,6 +331,22 @@ python converter.py --host 127.0.0.1 --port 8787 --api-key "<自设访问密钥>
 
 用量日志和请求动态直接展示客户端 IP，支持复制及点击筛选。IP 管理的活跃 IP 表可筛选高频低 Token、高频低积分，设置最少请求数、平均消耗上限及 IP 地址；均值按成功用量记录统计，未返回 Token 的请求不作为低消耗。入口次数包含鉴权拒绝、限流和封禁；点击 IP 可查看用量明细。IP 仅从受信任代理的转发头读取，反向代理应覆盖 `X-Real-IP`；直连使用连接来源地址。
 
+反向代理必须让后端看到真实客户端 IP，否则所有请求看起来都是代理的 IP，登录防爆破会退化成「全局锁」——任何人打几次错误密码就能把管理员锁在门外。nginx 站点配置（放进反代本服务的 `location` 块）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8790;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;              # 覆写，后端只信任这个
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;                                   # 流式响应必需
+}
+```
+
+后端默认只信任 `127.0.0.1,::1` 直连对端提交的转发头（`ADMIN_TRUSTED_PROXY_IPS` 可改为 CIDR 列表）；不可信来源自报的 `X-Real-IP` / `X-Forwarded-For` 一律忽略。登录失败计数按「(IP, 用户名) 对 + 同 IP 全局 + 设备/浏览器指纹」三个维度独立累计：攻击者只能锁住「自己的 IP × 他猜的用户名」，锁不到管理员的来源 IP。
+
 调用详情先加载摘要，展开某次请求后按需读取正文，每页最多 64 KiB；翻页替换当前预览，关闭详情取消正在加载的预览。完整正文通过独立 JSONL 下载，不在页面中同时展开或复制多份大正文。记录时复用受限的原始字节缓存，避免重新序列化完整请求。
 
 调用详情支持下载 JSONL（用量、入站请求、转换后各次实际发往上游的请求和诊断）。在用量日志打开“记录请求详情”即时生效，默认关闭，仅记录开启后进入的 JSON 推理请求。请求内容仅存服务进程内存，1 小时过期，最多 200 条或 64 MiB，达到上限淘汰最旧记录；重启全部清空，开关恢复环境初始值。单请求入站及所有上游尝试合计上限 8 MiB，单份正文由 `ADMIN_LOG_PAYLOAD_MAX_MB` 控制（默认 8，范围 1–8），超出截断并明确标记。请求头采用保留名单并隐藏凭据，正文按实际序列化内容保存，可能包含完整对话；仅管理员可以读取。关闭停止新请求采集，已有缓存可手动清空。历史未记录、过期或淘汰的内容无法恢复。`ADMIN_LOG_REQUEST_PAYLOAD=1` 可改变重启后的初始开关。多进程部署各进程的开关和缓存独立，需使用单工作进程进行此项临时排查。
@@ -341,6 +354,8 @@ python converter.py --host 127.0.0.1 --port 8787 --api-key "<自设访问密钥>
 ### 客户端参数与跨部署同步
 
 Windows 或源码部署的“客户端参数”页面可探测本机官方客户端版本和请求参数，查看每项取值来源，按需保存、重置或切换来源策略。`auto` 优先现场探测，适合装有官方客户端的电脑；`saved` 优先已保存档案，适合没有官方安装包的服务器。显式环境变量优先于这两种策略，兼容参数名以源码为准。
+
+探测分两路并逐项标注来源：**安装包**（版本号、commit、部署形态、风控渠道号等，读自官方安装目录）与**本机系统**（os / arch / 内核版本 / CPU 核数 / 内存 / 时区 / 内嵌 Node 版本，仅在装了官方客户端的机器上采纳，取值公式与官方源码一致）。客户端档案只用于展示、同步和需要它的客户端业务；普通模型请求不会自动添加未经实际请求证实的 `X-Stainless-*`、设备、IP、ACP 或链路追踪头。UA 仅在档案或环境中有明确值时使用，Python 的 TLS ClientHello 仍由运行时决定，不能宣称与 Electron 完全一致。
 
 在“同步设置”中配置目标服务地址与设备同步密钥，可推送账号、模型配置和当前生效的客户端参数档案。接收端将档案设为 `saved`，避免服务器探测不到客户端时丢失已同步值。同步使用专门的设备密钥，不使用调用模型的 API Key；同步目标应是自己管理的服务，并使用 HTTPS 或受保护的网络。安卓端将对应区域用于本机服务设置，不提供完整桌面参数管理。
 
@@ -354,14 +369,6 @@ Windows 或源码部署的“客户端参数”页面可探测本机官方客户
 
 ## 自动化与定时任务
 
-### DeepSeek 服务异常补偿 500 积分
-
-账号池 → 管理操作 → 额度与批量管理 → **一键领取 DeepSeek 补偿**，确认后对全部启用账号执行。无需勾选账号，页面只提交一次批量请求，服务端处理逐账号领取并返回实时进度；完成弹窗显示领取成功、失败、已领取、顺延账号数和本次新增积分。
-
-自动检查统一在“定时任务 → 每日检查并领取权益”管理，默认每天一次。当前接入官方补偿权益状态接口，按返回的金额、截止时间和领取状态识别活动，发现可领取权益后自动领取；已领取记录按账号及活动保存，后续出现新的金额或截止时间时重新检查。新类型福利若使用其他接口，需要另行接入。
-
-DeepSeek 补偿是本期一次性手动操作，请于 **2026/10/22 23:59:59（北京时间）** 前领取；没有单独的自动设置菜单或专属定时任务。旧专属任务升级时迁移为每日权益任务，并保留启停状态。领取后刷新余额与到期快照；请求超时先核对官方状态，刷新失败不会重新提交已成功的领取。
-
 账号池的“刷新全部”也通过一次 POST 提交后台任务，显示进度与成功/失败/跳过汇总。账号停用、正在对话或受保护时跳过，可稍后重试。上游接口按账号鉴权，由服务端依次请求，浏览器无需逐账号发送刷新请求。
 
 ### 任务类型
@@ -372,7 +379,6 @@ DeepSeek 补偿是本期一次性手动操作，请于 **2026/10/22 23:59:59（�
 | `refresh_credits` | 更新逐账号积分包与到期快照 |
 | `sync_models` | 同步上游模型列表 |
 | `daily_checkin` | 查询每日积分打卡状态并领取可领取奖励 |
-| `claim_benefits` | 每日查询已接入的官方权益接口，发现有效且未领取的福利后自动领取 |
 | `refresh_growth_tasks` | 更新成长任务列表与状态 |
 | `run_growth_tasks` | 参与、执行可自动化成长任务并领取奖励 |
 | `run_growth_plan` | 巡检活跃、宠物旅行、地图奖励、免费抽奖与盲盒等成长计划活动 |
@@ -406,6 +412,8 @@ OpenAI 使用 `Authorization: Bearer <API Key>`；Anthropic 可使用 `x-api-key
 | 方法与路径 | 用途 |
 | --- | --- |
 | `GET /v1/models` | 当前 Key 有权使用的启用模型 |
+| `GET /v1/balance` | 当前 Key 可用积分的同步快照与网关额度 |
+| `GET /user/balance` | DeepSeek 官方余额接口兼容（`/v1/user/balance` 同义） |
 | `POST /v1/chat/completions` | OpenAI Chat，支持流式和非流式 |
 | `POST /v1/responses` | OpenAI Responses，面向 Responses 兼容客户端 |
 | `POST /v1/messages` | Anthropic Messages，包含工具消息与思考参数兼容处理 |
@@ -413,7 +421,27 @@ OpenAI 使用 `Authorization: Bearer <API Key>`；Anthropic 可使用 `x-api-key
 | `POST /v1/images/generations` | AI 文生图，JSON 请求 |
 | `POST /v1/images/edits` | AI 图生图，支持单张图片上传或 JSON 图片来源 |
 
-独立 converter 另外提供 `/v1/balance` 和 `/health`。这些端点不代表共享账号池的总余额或健康状态。
+`GET /v1/models` 保留上游的模型名称、输入与输出上限、能力及思考档位，并提供 `context_length`、`context_window`、`max_input_tokens`、`max_output_tokens`、`reasoning_supported_efforts` 和 `reasoning_default_effort`。上游没有提供的容量返回空值，不填入猜测值。DSH 的模型发现流程可读取上下文与输出上限；是否采用思考档位取决于客户端自身支持。
+
+`GET /v1/balance` 使用同一个 API Key，通过 Bearer 或 `X-API-Key` 鉴权。`balance` / `balance_remain` 是该 Key 可访问的活跃账号余额与 Key 剩余额度两者的较小值；无限额度 Key 使用账号余额。`upstream_balance_remain` 是对应账号范围的上游积分快照，`key_quota` 单独说明网关额度。绑定 Key 只统计绑定账号；公共 Key 排除其他 Key 独占的账号，同 UID 不重复累计。`shared_pool=true` 表示余额由公共 Key 共享，并非该 Key 的独占额度。`synced_at` 是全部纳入账号中最早的同步时间；存在未同步账号时为 `null` 且 `snapshot_complete=false`。此查询不触发逐账号上游刷新，需在管理页或定时任务刷新余额后读取。额度耗尽的有效 Key 仍可查询，返回可用余额 0；停用 Key 返回 403。
+
+`GET /user/balance` 是 DeepSeek 官方余额接口（`https://api.deepseek.com/user/balance`）的兼容实现，`/v1/user/balance` 为同义别名，供 base_url 已带 `/v1` 的 DeepSeek 系客户端与渠道余额检测工具直接使用。返回 DeepSeek 的固定形状（金额为字符串）：
+
+```json
+{
+  "is_available": true,
+  "balance_infos": [{
+    "currency": "CREDITS",
+    "total_balance": "4200.00",
+    "granted_balance": "0.00",
+    "topped_up_balance": "4200.00"
+  }]
+}
+```
+
+口径与 `/v1/balance` 一致：`total_balance` 是该 Key 实际可用积分（账号池余额与 Key 剩余额度取小，无限额度 Key 用账号余额），`is_available` 表示可用积分大于 0。上游没有「赠金 / 充值」的区分，`granted_balance` 恒为 `"0.00"`；记账单位是积分而不是人民币，因此 `currency` 如实标注为 `CREDITS` 而非冒充 `CNY`。同样不触发逐账号上游刷新。
+
+独立 converter 另外提供 `/v1/balance`、`/user/balance` 和 `/health`，挂载时路径为 `/gw/v1/balance`、`/gw/user/balance` 和 `/gw/health`；其余额属于本机桌面登录账号。
 
 ### OpenAI 兼容客户端与 SDK
 
@@ -549,7 +577,7 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | `ADMIN_REDIS_URL` | Redis 连接地址，内存限流模式可留空 |
 | `ADMIN_GATEWAY_LIMIT_BACKEND` | `auto` / `redis` / `memory`，按部署选择 |
 | `ADMIN_GATEWAY_RATE_PER_MINUTE` / `ADMIN_GATEWAY_MAX_CONCURRENT` | 每 Key 的分钟请求量与并发准入上限 |
-| `ADMIN_GATEWAY_WAIT_TIMEOUT` / `ADMIN_GATEWAY_REQUEST_TIMEOUT` | Key 并发空位等待默认 `15` 秒（上限 `30`）；推理请求最长 `120` 秒，含排队、上传、上游处理和流式返回 |
+| `ADMIN_GATEWAY_WAIT_TIMEOUT` / `ADMIN_GATEWAY_REQUEST_TIMEOUT` | Key 并发空位等待默认 `15` 秒（上限 `30`）；推理请求最长 `160` 秒，含排队、上传、上游处理和流式返回 |
 | `ADMIN_GATEWAY_QUEUE_TIMEOUT` | 请求内部排队上限，默认 `90` 秒，覆盖等上游发车间隔与等可用账号，独立于 Key 并发等待 |
 | `ADMIN_JOIN_MAX_CONCURRENT` | 注册接口最大并发数，超过后快速返回重试提示，默认 `4` |
 | `ADMIN_BACKEND` | 上游服务地址；保留实际域名，默认值以配置模板和源码为准 |
@@ -562,6 +590,8 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | `ADMIN_STREAM_CONNECT_TIMEOUT` / `ADMIN_STREAM_IDLE_TIMEOUT` | 上游连接与流静默阶段超时，默认 `15` / `180` 秒；请求总时限另见网关配置 |
 | `ADMIN_STREAM_WRITE_TIMEOUT` / `ADMIN_STREAM_POOL_TIMEOUT` | 写请求与等待连接池超时，默认 `60` / `20` 秒 |
 | `ADMIN_KEEPALIVE_ENABLED` / `ADMIN_KEEPALIVE_HOURS` / `ADMIN_KEEPALIVE_ACCOUNT_GAP` | token 保活开关、执行整点及逐账号间隔 |
+| `ADMIN_LOGIN_MAX_ATTEMPTS` / `ADMIN_LOGIN_IP_MAX_ATTEMPTS` | 登录防爆破阈值：`(IP, 用户名)` 对默认 `5` 次；同 IP 全局默认取其 3 倍。任何人打错密码只锁「他的 IP × 他猜的用户名」，锁不到管理员的 IP |
+| `ADMIN_BAN_RECHECK_ENABLED` / `MIN_INTERVAL` / `MAX_INTERVAL` | 风控封号（11140 等）自动复核：真实模型调用探测，通过即自动解封；退避间隔默认 `1800`–`21600` 秒 |
 | `ADMIN_ANTHROPIC_MODEL_OPUS` / `SONNET` / `HAIKU` | 三档模型别名映射，后三项均使用 `ADMIN_ANTHROPIC_MODEL_` 前缀 |
 | `CONVERTER_API_KEY` | 可选 `/gw` 的独立访问密钥，本机凭证目录另按源码中的兼容参数配置 |
 | `CONVERTER_DESENSITIZE` / `CONVERTER_LOG` | 内嵌 converter 的文本兼容处理与日志位置 |

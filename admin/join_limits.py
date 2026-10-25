@@ -3,6 +3,8 @@ import threading
 
 from starlette.responses import JSONResponse
 
+from admin.config import settings
+
 
 _JOIN_PATHS = {
     '/api/join/start',
@@ -26,7 +28,13 @@ class JoinAdmissionMiddleware:
             return await self.app(scope, receive, send)
 
         with self._lock:
-            busy = self._active >= self.max_active
+            # 实时读配置：后台「运行配置」改 /join 并发后无需重启即生效。
+            limit = self.max_active
+            try:
+                limit = max(1, int(getattr(settings, "JOIN_MAX_CONCURRENT", self.max_active)))
+            except (TypeError, ValueError):
+                pass
+            busy = self._active >= limit
             if not busy:
                 self._active += 1
         if busy:

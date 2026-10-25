@@ -31,7 +31,7 @@ class Settings:
     # dispatcher and account selection still need room under peak load, but
     # must stay well inside the whole-request deadline.
     GATEWAY_QUEUE_TIMEOUT = max(0.0, min(115.0, float(os.getenv("ADMIN_GATEWAY_QUEUE_TIMEOUT", "90"))))
-    GATEWAY_REQUEST_TIMEOUT = max(1.0, min(120.0, float(os.getenv("ADMIN_GATEWAY_REQUEST_TIMEOUT", "120"))))
+    GATEWAY_REQUEST_TIMEOUT = max(1.0, min(160.0, float(os.getenv("ADMIN_GATEWAY_REQUEST_TIMEOUT", "160"))))
     JOIN_MAX_CONCURRENT = max(1, int(os.getenv("ADMIN_JOIN_MAX_CONCURRENT", "4")))
     GATEWAY_RATE_PER_MINUTE = int(os.getenv("ADMIN_GATEWAY_RATE_PER_MINUTE", "60"))
     GATEWAY_MAX_CONCURRENT = int(os.getenv("ADMIN_GATEWAY_MAX_CONCURRENT", "4"))
@@ -114,8 +114,10 @@ class Settings:
     # 计费：后端未回传 credits 时，按 total_tokens * 系数 / 1000 估算（系数单位为「每千 token 积分」）
     COST_PER_TOKEN = float(os.getenv("ADMIN_COST_PER_TOKEN", "0.01"))
 
-    # 上游记录客户端 IP 时使用的 header 名（若上游有自定义要求，如 X-Client-Ip / X-Real-IP 等）
-    # 为空则同时发送 X-Forwarded-For / X-Real-IP / X-Client-IP 等常见头
+    # 上游记录客户端 IP 时使用的 header 名（排障逃生门，默认关闭）。
+    # 官方客户端直连上游从不携带 X-Forwarded-For / X-Real-IP / X-Client-IP，
+    # 上游计量只看 Bearer 令牌 —— 主动带 IP 头反而是可识别的代理特征，
+    # 所以默认一律不发；仅当运维显式配置头名时才发送该头。
     UPSTREAM_CLIENT_HEADER = os.getenv("ADMIN_UPSTREAM_CLIENT_HEADER", "")
 
     # 上游请求用量「client」列显示的产品名。
@@ -197,11 +199,11 @@ class Settings:
     #: 保活/批量任务里账号之间的最小间隔（秒），避免批量请求被识别为机器行为。
     KEEPALIVE_ACCOUNT_GAP = float(os.getenv("ADMIN_KEEPALIVE_ACCOUNT_GAP", "0.8"))
 
-    # ---------- 上游阶段超时（另有最多 120 秒的网关总时限） ----------
+    # ---------- 上游阶段超时（另有最多 160 秒的网关总时限） ----------
     #: 连接超时（秒）：连不上就快速换号，不让用户干等。
     STREAM_CONNECT_TIMEOUT = float(os.getenv("ADMIN_STREAM_CONNECT_TIMEOUT", "15"))
     #: 流式**静默**超时（秒）：两次数据之间的最大间隔。
-    #: 它约束的是上游读空闲时间；网关另有 120 秒总时限，覆盖排队、上传、
+    #: 它约束的是上游读空闲时间；网关另有 160 秒总时限，覆盖排队、上传、
     #: 上游处理和客户端接收，避免单个阻塞请求长期占用账号与连接资源。
     STREAM_IDLE_TIMEOUT = float(os.getenv("ADMIN_STREAM_IDLE_TIMEOUT", "180"))
     #: 写入（上传 prompt）超时（秒）。
@@ -209,10 +211,26 @@ class Settings:
     #: 连接池等待超时（秒）：池子饱和就快速失败，交给上层退避，而不是无限排队。
     STREAM_POOL_TIMEOUT = float(os.getenv("ADMIN_STREAM_POOL_TIMEOUT", "20"))
 
-    # 登录防爆破：同一 IP 在窗口内失败超过阈值即锁定一段时间
+    # 登录防爆破：三个维度各自计数，任一到阈值即锁该维度（见 admin/ratelimit.py）
+    #   * (IP, 用户名) 对 —— 主维度：攻击者只锁「他的 IP × 他猜的用户名」；
+    #   * 同 IP 全局 —— 上限更高，兜住「换用户名撒网」的爆破总量；
+    #   * 指纹（可选）—— 客户端上报设备/浏览器指纹时额外收紧，不报则不启用。
+    # 窗口与锁时长三维度共用。这样任何人打错密码都锁不到真实管理员的 IP。
     LOGIN_MAX_ATTEMPTS = int(os.getenv("ADMIN_LOGIN_MAX_ATTEMPTS", "5"))
+    LOGIN_IP_MAX_ATTEMPTS = int(os.getenv("ADMIN_LOGIN_IP_MAX_ATTEMPTS", "0"))  # 0 = 自动取主维度阈值 ×3
     LOGIN_WINDOW_SECONDS = int(os.getenv("ADMIN_LOGIN_WINDOW_SECONDS", "300"))  # 5 分钟窗口
     LOGIN_LOCK_SECONDS = int(os.getenv("ADMIN_LOGIN_LOCK_SECONDS", "900"))      # 锁 15 分钟
+
+    # ---------- 风控封号自动复核（11140 等 account_fault）----------
+    #: 后台定时对「禁用/冷却中的风控号」做一次**真实模型调用**探测：
+    #: 探测通过 → 自动解封（恢复 active 并清计数）；仍 11140 → 按退避顺延下次复核。
+    #: 为什么必须真调模型：fetch_models / 余额接口对风控号常常照样放行，
+    #: 只有 craft 端点才反映「能不能用模型」。
+    BAN_RECHECK_ENABLED = os.getenv("ADMIN_BAN_RECHECK_ENABLED", "1") != "0"
+    #: 两次复核之间的最小间隔（秒），也是退避基数。
+    BAN_RECHECK_MIN_INTERVAL = int(os.getenv("ADMIN_BAN_RECHECK_MIN_INTERVAL", "1800"))
+    #: 复核退避封顶（秒）。持续 11140 的号最长 6 小时探一次，不再更密。
+    BAN_RECHECK_MAX_INTERVAL = int(os.getenv("ADMIN_BAN_RECHECK_MAX_INTERVAL", "21600"))
 
     # CORS：共享网关用 Authorization 头鉴权（无需 Cookie），故默认关闭 credentials；
     # 留空或 * 表示允许任意来源；如需限制可设 ADMIN_CORS_ORIGINS=https://a.com,https://b.com

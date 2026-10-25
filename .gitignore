@@ -103,6 +103,8 @@ desktop/assets/*.ico
 desktop/assets/*.png
 
 !scripts/check_runtime.py
+!scripts/upgrade_gate.py
+!scripts/upgrade_control.py
 !scripts/check_maintenance.py
 !scripts/export_credential_key.py
 !scripts/asar_grep.py

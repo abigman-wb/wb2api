@@ -10,7 +10,8 @@ from admin.models import ClientIdentity, ClientIdentitySeen
 
 HEADERS = {'device_id': ('x-device-id', 'x-machine-id'),
            'fingerprint': ('x-device-fingerprint', 'x-fingerprint'),
-           'mac': ('x-device-mac', 'x-mac-address')}
+           'mac': ('x-device-mac', 'x-mac-address'),
+           'browser': ('x-browser-fingerprint',)}
 _recent = {}
 _lock = Lock()
 

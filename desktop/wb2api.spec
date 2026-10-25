@@ -7,6 +7,9 @@ root = Path(SPECPATH).parent
 version = json.loads((root / 'desktop/version.json').read_text(encoding='utf-8'))['version']
 name = f'wb2api-{version}-windows-x64'
 datas = [(str(root / 'admin/static'), 'admin/static'),
+         # The authenticated management console lives outside the public
+         # static directory and must be present in the desktop bundle too.
+         (str(root / 'admin/console'), 'admin/console'),
          # admin/data/ 是运行期用 read_text() 读的 JSON（上游错误文案表），
          # 漏打包会让 EXE/APK 启动即 FileNotFoundError：源码运行正常，只有产物才暴露。
          (str(root / 'admin/data'), 'admin/data'),

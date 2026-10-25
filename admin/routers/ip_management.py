@@ -133,7 +133,7 @@ def identity_items(db, ips=None, key_id=None, start=None):
 
 
 class IdentityIn(BaseModel):
-    kind: Literal['device_id', 'fingerprint', 'mac']
+    kind: Literal['device_id', 'fingerprint', 'mac', 'browser']
     value: str = Field(min_length=1, max_length=128)
     blocked: bool = True
     note: str = Field(default='', max_length=255)

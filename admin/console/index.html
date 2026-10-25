@@ -1,11 +1,12 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+<meta name="robots" content="noindex, nofollow" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>wb2api 管理后台</title>
-  <script src="/static/theme.js"></script>
-  <script src="/static/filter-combobox.js"></script>
+  <script src="/admin/assets/theme.js"></script>
+  <script src="/admin/assets/filter-combobox.js"></script>
   <!--
     全部静态资源都走本地 /static/vendor/**，不再依赖任何 CDN。
 
@@ -22,7 +23,7 @@
   -->
   <link rel="stylesheet" href="/static/vendor/tailwind/tailwind.min.css" />
   <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css" />
-  <link rel="stylesheet" href="/static/growth_center.css" />
+  <link rel="stylesheet" href="/admin/assets/growth_center.css" />
   <style>
     /* ==========================================================================
        设计令牌（借鉴 workbuddy-switch 的设计系统）
@@ -38,23 +39,26 @@
        并通过 CSS 变量 + 少量语义类落地（不引入新的构建步骤）。
        ========================================================================== */
     :root{
-      /* 品牌：官方青绿 */
-      --brand:#42c08e;            /* 浅色模式主色 */
-      --brand-strong:#2ea87a;     /* hover / 强调 */
-      --brand-ink:#1f8a63;        /* 主色文字（保证白底对比度） */
-      --brand-soft:rgba(66,192,142,.12);
-      --brand-grad:linear-gradient(135deg,#42c08e 0%,#2ea87a 100%);
+      /* 官方设计 token（workbuddy.cn 实测）：
+         产品色 #009273(主)/#27a388(次)/#d8f5ef(软填充)/#f2fcfa(软底)；
+         中性 #ffffff/#fafafa/#f0f0f0/#f7f8f9(页底)/#0a0a0a(墨)；
+         主按钮 #1a1a1a + 白字。深色模式沿用原青绿，见下方暗色块。 */
+      --brand:#009273;            /* 浅色模式主色 */
+      --brand-strong:#27a388;     /* hover / 强调 */
+      --brand-ink:#009273;        /* 主色文字（白底对比度足够） */
+      --brand-soft:#d8f5ef;
+      --brand-grad:linear-gradient(135deg,#27a388 0%,#009273 100%);
 
-      /* 中性面 */
-      --bg:#f5f6f8;               /* 页面底 */
+      /* 中性面（官方中性 token） */
+      --bg:#f7f8f9;               /* 页面底 */
       --surface:#ffffff;          /* 卡片 */
-      --surface-2:#f0f2f4;        /* 次级面（muted） */
-      --surface-3:#e6e8eb;        /* 三级面（accent） */
-      --border:#dfe1e5;
-      --border-soft:rgba(223,225,229,.6);
+      --surface-2:#fafafa;        /* 次级面（muted） */
+      --surface-3:#f0f0f0;        /* 三级面（accent） */
+      --border:#f0f0f0;
+      --border-soft:rgba(240,240,240,.7);
 
       /* 文字 */
-      --fg:#16181d;
+      --fg:#0a0a0a;
       --fg-muted:#656970;
       --fg-subtle:#94a3b8;
 
@@ -83,22 +87,23 @@
       --wb-surface:var(--surface-2);
       --wb-border:var(--border);
 
-      /* 图表色板：借鉴参考项目的 data-series（浅色档位） */
-      --c1:#139e6f; --c2:#33a6a0; --c3:#526fb2; --c4:#9379c2;
+      /* 图表色板：首色对齐官方产品绿 */
+      --c1:#27a388; --c2:#33a6a0; --c3:#526fb2; --c4:#9379c2;
       --c5:#ce9a43; --c6:#cb6c6d; --c7:#4492bd; --c8:#86a152;
     }
     /* Explicit preference; first visit always uses the light palette. */
     :root[data-theme="dark"]{
-        --bg:#0f172b; --surface:#1d293d; --surface-2:#29364b; --surface-3:#33425c;
-        --border:rgba(255,255,255,.10); --border-soft:rgba(255,255,255,.06);
-        --fg:#e2e8f0; --fg-muted:#90a1b9; --fg-subtle:#64748b;
+        /* 官方深色石墨 token：#141414/#1f1f1f/#292929/#353535，文字 #ffffff */
+        --bg:#141414; --surface:#1f1f1f; --surface-2:#292929; --surface-3:#353535;
+        --border:#353535; --border-soft:rgba(255,255,255,.06);
+        --fg:#ffffff; --fg-muted:rgba(255,255,255,.62); --fg-subtle:rgba(255,255,255,.40);
         --brand:#00bc7d; --brand-strong:#00a86e; --brand-ink:#34d399;
         --brand-soft:rgba(0,188,125,.16);
         --warn:#fb923c; --warn-bar:#f97316; --warn-soft:rgba(249,115,22,.18);
         --danger:#ff6467; --ok:#4ade80;
-        --sh-1:0 1px 2px rgba(0,0,0,.24), 0 10px 28px rgba(0,0,0,.28);
-        --sh-2:0 2px 4px rgba(0,0,0,.28), 0 14px 34px rgba(0,0,0,.34);
-        --sh-pop:0 10px 30px rgba(0,0,0,.45);
+        --sh-1:0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.45);
+        --sh-2:0 2px 4px rgba(0,0,0,.45), 0 14px 34px rgba(0,0,0,.5);
+        --sh-pop:0 10px 30px rgba(0,0,0,.6);
         --c1:#48c190; --c2:#59c5bf; --c3:#92b3fb; --c4:#c2a7f4;
         --c5:#ebb761; --c6:#f79494; --c7:#6dbbe8; --c8:#a7c474;
       }
@@ -114,11 +119,28 @@
     @keyframes fade{ from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:none;} }
     .toast{ position:fixed; right:16px; bottom:16px; z-index:60; }
     .modal-overlay{ background:rgba(15,23,42,.5); backdrop-filter:blur(2px); }
+    /* ---- 组件动画：开/关双向（弹窗、下拉、浮层） ---- */
+    @keyframes fadeIn{ from{opacity:0} to{opacity:1} }
+    @keyframes fadeOut{ from{opacity:1} to{opacity:0} }
+    @keyframes popIn{ from{opacity:0; transform:translateY(12px) scale(.965)} to{opacity:1; transform:none} }
+    @keyframes popOut{ from{opacity:1; transform:none} to{opacity:0; transform:translateY(8px) scale(.965)} }
+    @keyframes dropIn{ from{opacity:0; transform:translateY(-5px) scale(.985)} to{opacity:1; transform:none} }
+    @keyframes dropOut{ from{opacity:1; transform:none} to{opacity:0; transform:translateY(-4px) scale(.985)} }
+    @keyframes toastIn{ from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none} }
+    /* 弹窗：打开 overlay 淡入 + 盒体上浮缩放；关闭反向后真正隐藏 */
+    #modal:not(.hidden){ animation:fadeIn .16s ease; }
+    #modal #modalBox{ animation:popIn .22s cubic-bezier(.2,.7,.3,1); }
+    #modal.closing{ animation:fadeOut .17s ease forwards; pointer-events:none; }
+    #modal.closing #modalBox{ animation:popOut .17s ease forwards; }
+    /* 下拉：面板开=下落进入，关=上收退出 */
+    .ui-select.open .ui-select-panel{ display:block; animation:dropIn .15s cubic-bezier(.2,.7,.3,1); }
+    .ui-select.closing .ui-select-panel{ display:block; animation:dropOut .13s ease forwards; }
+    .toast{ animation:toastIn .2s ease; }
     pre{ white-space:pre-wrap; word-break:break-all; }
     .bg-wb{ background:var(--brand-grad); }
     .text-wb{ color:var(--brand-ink); }
-    .btn-primary{ background:var(--brand-grad); color:#fff; transition:.15s; box-shadow:0 1px 2px rgba(15,23,42,.08); }
-    .btn-primary:hover{ filter:brightness(1.06); }
+    .btn-primary{ background:#1a1a1a; color:#fff; transition:.15s; box-shadow:0 1px 2px rgba(15,23,42,.12); }
+    .btn-primary:hover{ background:#333; }
     .card{
       background:var(--surface); border:1px solid var(--border); border-radius:var(--r);
       box-shadow:var(--sh-1);
@@ -168,6 +190,13 @@
     }
     .side-item:hover{ background:rgba(15,23,42,.04); color:var(--fg); }
     .side-item.active{ background:rgba(15,23,42,.06); color:var(--fg); font-weight:600; }
+    .side-item{ position:relative; }
+    .side-item::after{ content:""; position:absolute; left:-4px; top:50%; width:3px; height:0;
+      border-radius:3px; background:var(--brand); transform:translateY(-50%);
+      transition:height .22s cubic-bezier(.2,.7,.3,1); }
+    .side-item.active::after{ height:58%; }
+    .side-item:active{ transform:scale(.985); }
+    :root[data-theme="dark"] .side-item::after{ left:-4px; }
     .side-item i{ width:16px; text-align:center; font-size:13px; }
     .side-item .side-dot{
       margin-left:auto; min-width:18px; height:18px; padding:0 5px;
@@ -452,19 +481,22 @@
      * 不再出现「有的面板贴着指标卡、有的空一大截」。 */
     .panel-stack > section{ margin-top:0; }
 
-    /* 移动端横向滚动条美化 */
+    /* 滚动条：透明轨道 + 短胶囊滑块，悬停才加深（对齐官方后台的极简样式） */
     .overflow-x-auto::-webkit-scrollbar{ height:8px; }
-    .overflow-x-auto::-webkit-scrollbar-thumb{ background:var(--brand); border-radius:8px; }
-    .overflow-x-auto::-webkit-scrollbar-track{ background:var(--surface-2); }
-    /* 全局滚动条美化（纵向+横向）；Firefox 走标准属性 */
-    *{ scrollbar-width:thin; scrollbar-color:var(--brand) var(--surface-2); }
-    ::-webkit-scrollbar{ width:10px; height:10px; }
-    ::-webkit-scrollbar-track{ background:var(--surface-2); }
+    .overflow-x-auto::-webkit-scrollbar-thumb{ background:#cbd5e1; border-radius:8px; }
+    .overflow-x-auto::-webkit-scrollbar-thumb:hover{ background:#94a3b8; }
+    .overflow-x-auto::-webkit-scrollbar-track{ background:transparent; }
+    *{ scrollbar-width:thin; scrollbar-color:#cbd5e1 transparent; }
+    :root[data-theme="dark"] *{ scrollbar-color:#4a4a4a transparent; }
+    ::-webkit-scrollbar{ width:8px; height:8px; background:transparent; }
+    ::-webkit-scrollbar-track{ background:transparent; }
     ::-webkit-scrollbar-thumb{
-      background:var(--brand); border-radius:10px;
+      background:#cbd5e1; border-radius:8px;
       border:2px solid transparent; background-clip:content-box;
     }
-    ::-webkit-scrollbar-thumb:hover{ background:var(--brand-strong); background-clip:content-box; }
+    ::-webkit-scrollbar-thumb:hover{ background:#94a3b8; background-clip:content-box; }
+    :root[data-theme="dark"] ::-webkit-scrollbar-thumb{ background:#4a4a4a; background-clip:content-box; }
+    :root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{ background:#5c5c5c; background-clip:content-box; }
     ::-webkit-scrollbar-corner{ background:transparent; }
 
     /* ==================== 自研下拉组件（替换原生 select）==================== */
@@ -483,7 +515,7 @@
       box-shadow:0 10px 30px rgba(17,24,39,.12); padding:.25rem;
       max-height:16rem; overflow:auto; display:none;
     }
-    .ui-select.open .ui-select-panel{ display:block; animation:fade .14s ease; }
+    .ui-select.open .ui-select-panel{ display:block; }
     .ui-select-opt{
       padding:.45rem .6rem; border-radius:.5rem; cursor:pointer; font-size:.875rem;
       display:flex; align-items:center; justify-content:space-between; gap:.5rem;
@@ -579,7 +611,19 @@
       .card.p-4{ padding:12px; }
       .app-body{ padding:14px 12px 28px; }
     }
-.acc-table{ width:100%; border-collapse:separate; border-spacing:0; font-size:12.5px; }
+/* 列宽骨架：table-layout:fixed + 固定列宽。自动布局下列宽完全由内容决定，
+ * 每 30s 刷新一次数字/徽标变化都会让列边界左右漂移、互相挤压（用户看到
+ * 的「字段挤变形、没有绝对对齐」）。固定后只有「积分到期」随剩余空间伸缩，
+ * 其余列宽恒定，表头与数值的左右边界永远对齐。 */
+.acc-table{ width:100%; min-width:960px; table-layout:fixed; border-collapse:separate; border-spacing:0; font-size:12.5px; }
+.acc-table thead th:nth-child(1){ width:220px; }  /* 名称 */
+.acc-table thead th:nth-child(2){ width:86px; }   /* 状态 */
+.acc-table thead th:nth-child(3){ width:92px; }   /* 总积分 */
+.acc-table thead th:nth-child(4){ width:100px; }  /* 剩余 */
+.acc-table thead th:nth-child(6){ width:266px; }  /* 操作（11 个图标按钮一排） */
+/* 全局 .col-status 是 width:1%+nowrap（给窄列用的）；账号表里冷却徽标可能
+ * 和状态胶囊叠放，固定列宽下允许换行竖排，避免溢出。 */
+.acc-table td.col-status{ width:auto; white-space:normal; }
 .acc-table thead th{
   background:var(--surface-2); color:var(--fg-muted); font-weight:500;
   text-align:left; padding:8px 10px; white-space:nowrap;
@@ -608,6 +652,12 @@
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10px;
   color:var(--fg-subtle); overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; max-width:92px;
+}
+/* 名称行里的状态小字（Key 独占/自动任务/初始化）：固定列宽下不许把行撑开，
+ * 超长省略号截断（完整信息都在 title 里）。 */
+.acc-table .c-name .nm small{
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  max-width:120px; flex:0 1 auto;
 }
 
 /* ==========================================================================
@@ -666,11 +716,19 @@
   transition:background .12s;
 }
 .acc-table .c-ops button:hover{ background:var(--surface-2); }
-/* 到期单元格：单行徽标 + 说明，不换行 */
+/* 到期单元格：单行徽标 + 说明，不换行。固定列宽下说明文字省略号截断，
+ * 「· N 包」计数不缩（完整包列表在悬停 tooltip 里）。 */
 .acc-exp{
   display:flex; align-items:center; gap:6px; white-space:nowrap;
 }
 .acc-exp .acc-exp-note{ font-size:11px; color:var(--fg-subtle); }
+.acc-table .acc-exp .acc-exp-note{
+  min-width:0; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto;
+}
+.acc-table .acc-exp .acc-exp-note:last-child{ flex:0 0 auto; }
+.acc-table .billing-state{
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
 
     /* 图表 tooltip（自绘：原生 <title> 延迟长、样式不可控） */
     #chartTip{
@@ -698,9 +756,9 @@
 .upload-result{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg-muted)}
 @media(max-width:480px){.upload-footer{gap:10px}.upload-footer-note{flex-basis:100%;order:3}.upload-file-input::file-selector-button{padding:8px 10px;margin-right:8px}}
   </style>
-  <link rel="stylesheet" href="/static/console.css?v=20261023-invitation-settings-3" />
+  <link rel="stylesheet" href="/admin/assets/console.css?v=20261024-table-skeleton-8" />
   <link rel="icon" href="/api/app/icon" type="image/svg+xml" />
-  <link rel="stylesheet" href="/static/desktop.css" />
+  <link rel="stylesheet" href="/admin/assets/desktop.css" />
   <script>if(new URLSearchParams(location.search).get('desktop')==='1') document.documentElement.classList.add('desktop-mode');</script>
 </head>
 <body>
@@ -839,7 +897,7 @@
             <summary class="console-btn"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>管理操作 <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
             <div class="action-menu-panel">
               <div class="action-menu-label">额度与批量管理</div>
-              <button type="button" data-account-batch onclick="closeAccountMenu(); WBBenefits.claimAll()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9M12 8v13"/></svg>一键领取 DeepSeek 补偿 · 500 积分</button>
+              <button type="button" data-account-batch onclick="closeAccountMenu(); healthCheckAll()"><i class="fa-solid fa-heart-pulse mr-1 text-emerald-600"></i>一键健康检查（积分 / 模型 / 对话）</button>
               <button type="button" onclick="closeAccountMenu(); openModelLimits()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9l6 3"/><circle cx="12" cy="12" r="9"/></svg>模型额度与冷却</button>
               <button type="button" data-account-batch onclick="closeAccountMenu(); accountBatchAction(growthRunBatch)"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v16h14V5h-4"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="m8 13 3 3 5-6"/></svg>成长任务与领奖</button>
               <button type="button" data-account-batch onclick="closeAccountMenu(); accountBatchAction(catTravelBatch)"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 9 18-6-6 18-4-8-8-4Zm8 4 10-10"/></svg>猫猫旅行与领奖</button>
@@ -847,11 +905,33 @@
           </details>
         </div>
       </div>
+      <details class="card model-pool-panel mb-3" id="modelPoolPanel">
+        <summary>
+          <span class="model-pool-title"><i class="fa-solid fa-chart-simple" aria-hidden="true"></i> 模型使用统计</span>
+          <span class="model-pool-hint">按模型看当日可用账号、用量与日额度（本地推断）</span>
+          <i class="fa-solid fa-chevron-down model-pool-arrow" aria-hidden="true"></i>
+        </summary>
+        <div class="model-pool-toolbar">
+          <div class="model-pool-select"><span class="text-xs" style="color:var(--fg-muted)">模型</span><span id="modelPoolSelectHost"></span></div>
+          <button type="button" class="console-btn quiet" onclick="loadModelPoolDetail()"><i class="fa-solid fa-rotate"></i>刷新</button>
+          <span id="modelPoolNote" class="text-xs" style="color:var(--fg-subtle)"></span>
+        </div>
+        <div id="modelPoolStats" class="stat-grid mb-2" role="status"></div>
+        <div class="overflow-x-auto">
+          <table class="tbl min-w">
+            <thead><tr>
+              <th>账号</th><th>状态</th><th class="text-right">近 24h 已用 Token</th><th>额度消耗（滚动 24h）</th>
+              <th class="text-right">近 24h 请求</th><th class="text-right">预估剩余额度</th><th class="text-right">账户余额</th><th>额度恢复（滚动窗口滑出）</th>
+            </tr></thead>
+            <tbody id="modelPoolRows"></tbody>
+          </table>
+        </div>
+      </details>
       <!-- 账号表：紧凑行（单行约 44px），一屏能看 12+ 行。
            原来是 142px/行（到期列里塞了 2 个积分包明细），一屏只看 4 行。
            积分明细移交给悬停 title 与「积分明细」弹窗。 -->
       <div id="accountTableWrap" class="card overflow-x-auto max-h-[70vh]">
-        <table class="acc-table" style="min-width:960px">
+        <table class="acc-table">
           <thead>
             <tr>
               <th>名称</th><th>状态</th>
@@ -1253,9 +1333,9 @@
 
       <div class="card overflow-hidden">
         <div class="overflow-x-auto max-h-[60vh]">
-          <table class="tbl" style="min-width:1240px">
+          <table class="tbl" style="min-width:1320px">
             <thead><tr>
-              <th>时间</th><th>客户端 IP</th><th>Key</th><th>账号</th><th>模型</th><th>Token</th>
+              <th>时间</th><th>客户端 IP</th><th>Key</th><th>账号</th><th>模型</th><th>Token</th><th>命中率</th>
               <th class="text-right">积分</th><th>耗时</th><th>用途</th><th>结果</th>
             </tr></thead>
             <tbody id="logBody"></tbody>
@@ -1282,6 +1362,14 @@
       <div id="clientHint" class="card p-4 mb-3 text-xs text-slate-500"></div>
 
       <div class="card p-5 mb-3">
+        <div class="flex flex-wrap justify-between items-center gap-2 mb-2">
+          <h3 class="font-semibold text-sm">运行时诊断</h3>
+          <span class="text-[11px] text-slate-400">只显示能力状态与头名称，不显示令牌或设备标识</span>
+        </div>
+        <div id="clientRuntimeDiagnostics" class="text-xs text-slate-500"></div>
+      </div>
+
+      <div class="card p-5 mb-3">
         <h3 class="font-semibold text-sm mb-2">生效中的 User-Agent</h3>
         <div class="flex gap-2 items-start">
           <code id="clientUa" class="flex-1 bg-slate-50 border rounded-lg px-3 py-2 text-xs break-all font-mono"></code>
@@ -1303,7 +1391,7 @@
 
       <div class="card p-5 mt-3">
         <h3 class="font-semibold text-sm mb-2">风控 / 审计请求头</h3>
-        <p class="text-[11px] text-slate-400 mb-3">官方客户端所有 API 请求必带的闸门头。多个默认头会与保存值合并，不会互相覆盖。</p>
+        <p class="text-[11px] text-slate-400 mb-3">客户端源码中观察到的兼容请求头。实际发送范围由端点决定；多个默认头会与保存值合并，不会互相覆盖。</p>
         <div id="clientHeaders"></div>
       </div>
 
@@ -1319,7 +1407,7 @@
     <section id="panel-sync" class="hidden">
       <h2 class="font-semibold mb-3">线上同步设置</h2>
       <div class="card p-5 max-w-2xl">
-        <p class="text-xs text-slate-400 mb-4">本地数据视为最新。配置线上实例的 URL 与密钥（HMAC 签名），点击「同步到线上」把本地账号、模型配置<b>与客户端参数（UA / 版本号 / 风控头）</b>推送过去。线上实例需配置相同密钥并通过 <code class="text-[11px]">/api/sync/receive</code> 接收，收到后会自动把客户端参数钉为「已保存」，因此线上无需安装桌面端也能报出与本地一致的真实版本号。</p>
+        <p class="text-xs text-slate-400 mb-4">本地数据视为最新。配置线上实例的 URL 与密钥（HMAC 签名），点击「同步到线上」把本地账号、模型配置<b>与客户端兼容参数（UA / 版本号 / 请求头）</b>推送过去。线上实例需配置相同密钥并通过 <code class="text-[11px]">/api/sync/receive</code> 接收。版本与产品字段从本机安装包读取，OS 与硬件字段按本机系统实测（仅在装了客户端的机器上有效）；线上服务器探测不到客户端，一律以同步过来的档案为准。</p>
         <label class="block text-sm mb-1">远程 URL</label>
         <input id="syncUrl" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm" placeholder="https://online.example.com" />
         <label class="block text-sm mb-1">同步密钥（HMAC 签名用）</label>
@@ -1475,6 +1563,14 @@
     <!-- 设置面板 -->
     <section id="panel-settings" class="hidden">
       <h2 class="settings-title">管理员设置</h2>
+      <div class="settings-section runtime-config-block">
+        <h3>运行配置<span class="runtime-config-sub">常用 .env 项动态改（exe / apk 部署没有配置文件，改这里即时生效；标「重启」的项重启后套用）</span></h3>
+        <div id="runtimeConfigHost"><p class="fs-12" style="color:var(--fg-subtle)">加载中…</p></div>
+        <div class="settings-actions" id="runtimeConfigActions" hidden>
+          <button onclick="saveRuntimeConfig()" class="console-btn primary"><i class="fa-solid fa-floppy-disk"></i>保存更改</button>
+          <span id="runtimeConfigStatus" class="settings-status" role="status"></span>
+        </div>
+      </div>
       <div class="settings-section">
         <h3>WorkBuddy 邀请绑定</h3>
         <div class="settings-fields">
@@ -1592,8 +1688,8 @@
 
 <link rel="stylesheet" href="/static/phone-region.css" />
 <script src="/static/phone-session.js"></script>
-<script src="/static/model-metadata.js?v=20261023-image-types-2"></script>
-<script src="/static/usage-ip.js"></script>
+<script src="/admin/assets/model-metadata.js?v=20261023-image-types-2"></script>
+<script src="/admin/assets/usage-ip.js"></script>
 <script>
 let _confirmResolve = null;
 
@@ -1678,14 +1774,20 @@ function uiSelectHTML(id, opts) {
   </div>`;
 }
 
+function uiSelectClose(el) {
+  if (!el || !el.classList.contains("open") || el.classList.contains("closing")) return;
+  el.classList.add("closing");
+  // 面板上收动画播完再摘掉 open（约 135ms），避免闪变
+  setTimeout(() => el.classList.remove("open", "closing"), 135);
+}
 function uiSelectToggle(id, ev) {
   if (ev) ev.stopPropagation();
   const el = $("#" + id);
   if (!el) return;
   const wasOpen = el.classList.contains("open");
   // 同时只开一个，避免面板互相重叠
-  document.querySelectorAll(".ui-select.open").forEach(x => { if (x.id !== id) x.classList.remove("open"); });
-  el.classList.toggle("open", !wasOpen);
+  document.querySelectorAll(".ui-select.open").forEach(x => { if (x.id !== id) uiSelectClose(x); });
+  if (wasOpen) uiSelectClose(el); else el.classList.add("open");
 }
 
 function uiSelectPick(id, value, ev, notify = true) {
@@ -1705,7 +1807,7 @@ function uiSelectPick(id, value, ev, notify = true) {
     if (on && !old) opt.insertAdjacentHTML("beforeend", '<i class="fa-solid fa-check"></i>');
     if (!on && old) old.remove();
   });
-  el.classList.remove("open");
+  uiSelectClose(el);
   if (notify && st.onChange) st.onChange(value, o);
 }
 
@@ -1778,6 +1880,142 @@ async function api(path, opts = {}) {
   }
   return response;
 }
+
+/* ==================== 运行配置（.env 常用项动态改） ==================== */
+let _runtimeFields = [];
+let _runtimeDirty = new Set();
+let _runtimeGroup = "";
+
+async function loadRuntimeConfig() {
+  const host = document.getElementById("runtimeConfigHost");
+  if (!host) return;
+  try {
+    const { ok, data } = await safeJson(await api("/api/runtime-config"));
+    if (!ok) throw new Error(data.detail || "加载失败");
+    _runtimeFields = data.fields || [];
+    _runtimeDirty = new Set();
+    const groups = [...new Set(_runtimeFields.map(f => f.group))];
+    if (!groups.includes(_runtimeGroup)) _runtimeGroup = groups[0] || "";
+    renderRuntimeConfig(groups);
+  } catch (e) {
+    host.innerHTML = `<p class="fs-12" style="color:var(--danger)">运行配置加载失败：${esc(e.message)}</p>`;
+  }
+}
+function renderRuntimeConfig(groups) {
+  const host = document.getElementById("runtimeConfigHost");
+  const overridden = _runtimeFields.filter(f => f.overridden).length;
+  const dirtyCount = _runtimeDirty.size;
+  host.innerHTML = `
+    <div class="rt-toolbar">
+      <div class="rt-group-sel" id="runtimeGroupHost"></div>
+      <span class="rt-summary">${overridden ? `<span class="rt-override">已覆盖 ${overridden} 项</span>` : "全部为 .env 默认值"}${dirtyCount ? ` · <span style="color:var(--warn)">待保存 ${dirtyCount} 项</span>` : ""}</span>
+    </div>
+    <div class="rt-table">${_runtimeFields.filter(f => f.group === _runtimeGroup).map(runtimeFieldHtml).join("")}</div>`;
+  const selHost = document.getElementById("runtimeGroupHost");
+  if (selHost) {
+    selHost.innerHTML = uiSelectHTML("runtimeGroupSel", {
+      value: _runtimeGroup,
+      options: groups.map(g => {
+        const n = _runtimeFields.filter(f => f.group === g && f.overridden).length;
+        return { value: g, label: g + (n ? ` · 已改 ${n}` : "") };
+      }),
+      onChange: value => { _runtimeGroup = value; renderRuntimeConfig(groups); },
+    });
+    initUISelects([["runtimeGroupSel", "配置分组"]]);
+  }
+  bindRuntimeControls(groups);
+}
+function runtimeFieldHtml(f) {
+  const id = "rt-" + f.attr;
+  const tips = [f.desc];
+  if (f.kind === "int" || f.kind === "float") tips.push((f.max != null ? "范围 " + f.min + "~" + f.max : "最小 " + f.min) + " · 默认 " + f.default);
+  if (f.kind === "str") tips.push("默认 " + (f.default ?? "空"));
+  tips.push("保存后即时生效");
+  const info = `<i class="fa-solid fa-circle-info rt-info" tabindex="0" data-tooltip="${esc(f.label)}" data-tooltip-description="${esc(tips.filter(Boolean).join("；"))}"></i>`;
+  const badge = f.overridden ? `<span class="rt-override" tabindex="0" data-tooltip="已覆盖默认值" data-tooltip-description="当前值偏离 .env 默认；点右侧「恢复默认」回落">已改</span>` : "";
+  const restart = "";
+  let control;
+  if (f.kind === "bool") {
+    control = `<label class="model-switch rt-switch"><input type="checkbox" id="${id}" ${f.value ? "checked" : ""} data-attr="${f.attr}" /><span></span></label>`;
+  } else if (f.kind === "str") {
+    control = `<input id="${id}" data-attr="${f.attr}" value="${esc(String(f.value ?? ""))}" placeholder="${esc(f.default ?? "")}" title="默认：${esc(String(f.default ?? ""))}" />`;
+  } else {
+    control = `<input id="${id}" type="number" data-attr="${f.attr}" value="${f.value ?? ""}" min="${f.min ?? ""}"${f.max != null ? ` max="${f.max}"` : ""} step="${f.step ?? 1}" title="${f.max != null ? "范围 " + f.min + "~" + f.max : "最小 " + f.min} · 默认 ${f.default}" />`;
+  }
+  return `<div class="rt-field${f.overridden ? " is-overridden" : ""}" id="wrap-${id}">
+    <div class="rt-label"><span>${esc(f.label)}${info}${badge}${restart}</span></div>
+    <div class="rt-control">${control}
+      <button type="button" class="rt-reset" data-attr="${f.attr}" data-tooltip="恢复默认" data-tooltip-description="清除覆盖，回落 .env 默认值：${esc(String(f.default ?? ""))}" ${f.overridden || _runtimeDirty.has(f.attr) ? "" : "hidden"}>恢复默认</button>
+    </div>
+  </div>`;
+}
+function bindRuntimeControls(groups) {
+  document.querySelectorAll("#runtimeConfigHost .rt-field [data-attr]").forEach(el => {
+    el.addEventListener("change", () => {
+      _runtimeDirty.add(el.dataset.attr);
+      const wrap = document.getElementById("wrap-rt-" + el.dataset.attr);
+      if (wrap) wrap.classList.add("is-dirty");
+      const resetBtn = wrap && wrap.querySelector(".rt-reset");
+      if (resetBtn) resetBtn.hidden = false;
+    });
+  });
+  document.querySelectorAll("#runtimeConfigHost .rt-reset").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const f = _runtimeFields.find(x => x.attr === btn.dataset.attr);
+      if (!f) return;
+      const el = document.getElementById("rt-" + f.attr);
+      if (f.kind === "bool") el.checked = !!f.default;
+      else el.value = f.kind === "str" ? (f.default ?? "") : (f.default ?? "");
+      el.dataset.reset = "1";
+      _runtimeDirty.add(f.attr);
+      const wrap = document.getElementById("wrap-rt-" + f.attr);
+      if (wrap) wrap.classList.add("is-dirty");
+    });
+  });
+}
+
+function askRestartAfterSave() {
+  openModal('<h3><i class="fa-solid fa-circle-check mr-1" style="color:var(--ok)"></i>配置已保存并即时生效</h3>' +
+    '<p class="my-3">一般无需重启。若想彻底刷新进程状态（例如刚恢复过备份），可立即重启：监督器会自动拉起新实例，约 10 秒恢复。</p>' +
+    '<div class="flex gap-2 justify-end mt-4"><button class="console-btn" onclick="closeModal()">暂不</button>' +
+    '<button class="console-btn rt-restart-btn" id="restartSvcBtn" onclick="WBReview.doRestartService()"><i class="fa-solid fa-power-off"></i>立即重启</button></div>', 'max-w-lg');
+}
+
+async function saveRuntimeConfig() {
+  const updates = {};
+  for (const attr of _runtimeDirty) {
+    const el = document.getElementById("rt-" + attr);
+    if (!el) continue;
+    if (el.dataset.reset === "1") { updates[attr] = null; continue; }
+    updates[attr] = el.type === "checkbox" ? (el.checked ? 1 : 0) : el.value;
+  }
+  if (!Object.keys(updates).length) { toast("没有更改需要保存"); return; }
+  const status = document.getElementById("runtimeConfigStatus");
+  if (status) status.textContent = "保存中…";
+  try {
+    const { ok, data } = await safeJson(await api("/api/runtime-config", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
+    }));
+    if (!ok) throw new Error(data.detail || "保存失败");
+    const errs = data.errors || {};
+    const errKeys = Object.keys(errs);
+    _runtimeFields = data.fields || _runtimeFields;
+    _runtimeDirty = new Set();
+    renderRuntimeConfig([...new Set(_runtimeFields.map(f => f.group))]);
+    if (errKeys.length) toast(`已保存，${errKeys.length} 项未通过校验：${errKeys.map(k => k + " " + errs[k]).join("；").slice(0, 120)}`, "err");
+    else {
+      const changed = (data.changed || []).length, reverted = (data.reverted || []).length;
+      toast(`已保存并生效：${changed} 项更新${reverted ? ` · ${reverted} 项恢复默认` : ""}`, "ok");
+      askRestartAfterSave();
+    }
+  } catch (e) {
+    toast("保存失败：" + e.message, "err");
+  } finally {
+    if (status) status.textContent = "";
+  }
+}
+
 async function loadInvitation() {
   try {
     const {ok, data} = await safeJson(await api('/api/settings/invitation'));
@@ -1821,7 +2059,10 @@ function toast(msg, type = "ok") {
   $("#toasts").appendChild(el);
   setTimeout(() => el.remove(), 3200);
 }
+let _modalCloseTimer = null;
 function openModal(html, widthClass) {
+  if (_modalCloseTimer) { clearTimeout(_modalCloseTimer); _modalCloseTimer = null; }
+  $("#modal").classList.remove("closing");
   $('#modal').dataset.closeOnly = '';
   const box = $("#modalBox");
   window.WBDateTimePicker?.destroyWithin(box);
@@ -1834,10 +2075,23 @@ function openModal(html, widthClass) {
   box.setAttribute("role", "dialog"); box.setAttribute("aria-modal", "true");
   box.innerHTML = '<button type="button" class="modal-close-button" onclick="closeModal()" aria-label="关闭弹窗">×</button>' + html;
   box.scrollTop = 0;
+  // 重放打开动画（连续两次打开同一个弹窗时也要动）
+  box.style.animation = "none"; void box.offsetWidth; box.style.animation = "";
   $("#modal").classList.remove("hidden");
   $("#modal").classList.add("flex");
 }
-function closeModal() { window.WBUsage?.closeDetail(); window.WBPhone?.closeRegion(); window.WBDateTimePicker?.close(); $("#modal").classList.add("hidden"); $("#modal").classList.remove("flex"); if ($('#usageDiagnosticText') || $('#usageDetailLoading')) $('#modalBox').replaceChildren(); }
+function closeModal() {
+  window.WBUsage?.closeDetail(); window.WBPhone?.closeRegion(); window.WBDateTimePicker?.close();
+  const m = $("#modal");
+  if (!m || m.classList.contains("hidden") || m.classList.contains("closing")) return;
+  m.classList.add("closing");
+  // 关闭动画播完再真正隐藏（约 175ms）
+  _modalCloseTimer = setTimeout(() => {
+    _modalCloseTimer = null;
+    m.classList.remove("closing", "flex"); m.classList.add("hidden");
+    if ($('#usageDiagnosticText') || $('#usageDetailLoading')) $('#modalBox').replaceChildren();
+  }, 175);
+}
 async function copyText(sel){
   const source = $(sel); if(!source) return;
   const text = source.value ?? source.textContent ?? '';
@@ -1870,7 +2124,25 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+function browserFingerprint() {
+  try {
+    const bits = [navigator.userAgent, navigator.language, (navigator.languages || []).join(","),
+      screen.width + "x" + screen.height + "x" + (screen.colorDepth || 0),
+      (Intl.DateTimeFormat().resolvedOptions().timeZone || ""),
+      String(navigator.hardwareConcurrency || ""), String(navigator.deviceMemory || "")];
+    const s = bits.join("|");
+    let a = 0x811c9dc5, b = 0x9e3779b9;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      a = (Math.imul(a ^ c, 0x01000193)) >>> 0;
+      b = (Math.imul(b ^ ((c + i) & 0xffff), 0x85ebca6b)) >>> 0;
+    }
+    return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+  } catch (e) { return ""; }
+}
+
 async function doLogin() {
+  const fp = browserFingerprint();
   const fd = new URLSearchParams({ username: $("#username").value, password: $("#password").value });
   const btn = $("#loginBtn");
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> 登录中...'; }
@@ -1879,7 +2151,7 @@ async function doLogin() {
     if (el) { el.textContent = m; el.classList.remove("hidden"); }
   };
   try {
-    const r = await fetch("/api/login", { method: "POST", body: fd });
+    const r = await fetch("/api/login", { method: "POST", body: fd, headers: fp ? { "X-Browser-Fingerprint": fp } : {} });
     if (!r.ok) {
       // 尽量给出真实原因，而不是笼统的"登录失败"
       let msg = "登录失败";
@@ -1903,7 +2175,10 @@ async function doLogin() {
     if (btn) { btn.disabled = false; btn.textContent = "登录"; }
   }
 }
-function logout() { localStorage.removeItem(TOKEN_KEY); location.reload(); }
+async function logout() {
+  try { await fetch("/api/login/logout", { method: "POST" }); } catch (e) {}
+  localStorage.removeItem(TOKEN_KEY); location.reload();
+}
 function enterApp() {
   $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
   $("#proxyUrl").textContent = location.origin + "/v1";
@@ -1978,7 +2253,7 @@ function activateTab(name, opts) {
   if (name === "credits") loadCreditStats();
   if (name === "logs") openLogsPanel();
   if (name === "client") loadClientProfile();
-  if (name === "settings") { loadAppSource(); loadInvitation(); }
+  if (name === "settings") { loadAppSource(); loadInvitation(); loadRuntimeConfig(); }
   if (name === "models") loadModels();
   if (name === "growth") window.WBGrowthCenter?.enter();
   scheduleModelBusy();
@@ -2248,7 +2523,9 @@ function accExpiryCell(a) {
 
 function consoleIcon(name) {
   const paths = {"fa-user-group": "<circle cx=\"9\" cy=\"7\" r=\"3\"/><path d=\"M3 21v-3a6 6 0 0 1 12 0v3m2-17a3 3 0 0 1 0 6m2 4a5 5 0 0 1 2 4v3\"/>", "fa-hourglass-half": "<path d=\"M6 2h12M6 22h12M7 2v5l10 10v5M17 2v5L7 17v5\"/>", "fa-chart-pie": "<path d=\"M21 12a9 9 0 1 1-9-9v9Zm-5-9a9 9 0 0 1 5 5h-5Z\"/>", "fa-key": "<circle cx=\"8\" cy=\"8\" r=\"5\"/><path d=\"m12 12 9 9m-5-5 3-3m-1 5 3-3\"/>", "fa-cubes": "<path d=\"m12 3 8 4v10l-8 4-8-4V7Zm-8 4 8 4 8-4M12 11v10\"/>", "fa-layer-group": "<path d=\"m12 3 10 5-10 5L2 8Zm-9 10 9 5 9-5M3 18l9 5 9-5\"/>", "fa-clock-rotate-left": "<path d=\"M3 4v5h5m-5 0a9 9 0 1 1 0 7M12 7v5l3 2\"/>", "fa-list": "<path d=\"M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01\"/>", "fa-fingerprint": "<path d=\"M4 12a8 8 0 0 1 16 0m-13 5v-5a5 5 0 0 1 10 0v3m-7 5v-8a2 2 0 0 1 4 0v5m-1 5a12 12 0 0 0 4-4M3 16v-1\"/>", "fa-cloud-arrow-up": "<path d=\"M6 18a5 5 0 1 1 1-10 6 6 0 0 1 11 1 4 4 0 0 1 0 8m-6 4V11m-4 4 4-4 4 4\"/>", "fa-gear": "<path d=\"m10 3-1 3-3 1-2 3 2 2v3l2 2 3-1 2 2 3-1 1-3 3-1 1-3-3-2V7l-3-2-2 1Z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>", "fa-seedling": "<path d=\"M12 21v-9M12 16C5 16 3 11 3 7c6 0 9 3 9 9Zm0-4c0-6 3-9 9-9 0 6-3 9-9 9Z\"/>", "fa-cat": "<path d=\"m5 9-1-6 6 3h4l6-3-1 6a8 8 0 1 1-14 0Zm4 4h.01M15 13h.01m-4 4h2\"/>", "fa-list-ul": "<path d=\"M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01\"/>", "fa-chart-line": "<path d=\"M3 3v18h18M6 15l4-5 4 3 6-7\"/>", "fa-right-to-bracket": "<path d=\"M14 3h6v18h-6M3 12h12m-4-4 4 4-4 4\"/>", "fa-rotate": "<path d=\"M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1\"/>", "fa-file-export": "<path d=\"M12 3H4v18h12v-5M9 10h12m-4-4 4 4-4 4\"/>", "fa-power-off": "<path d=\"M12 2v10M6 5a9 9 0 1 0 12 0\"/>", "fa-trash": "<path d=\"M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7\"/>"};
-  return paths[name] ? `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>` : '';
+  const extraPaths = {"fa-heart-pulse": "<path d=\"M3 12h4l2-6 4 12 2-6h6\"/>"};
+  const path = paths[name] || extraPaths[name];
+  return path ? `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">${path}</svg>` : '';
 }
 
 function accountActionDescription(title) {
@@ -2257,6 +2534,7 @@ function accountActionDescription(title) {
     '猫猫旅行':'查看旅行状态，派出或领取奖励',
     '积分明细（逐包到期日）':'查看积分包余额、有效期与到期风险',
     '请求用量':'查看该账号的上游请求与消耗明细',
+    '三项健康检查：积分、模型列表、真实对话':'依次验证积分、模型目录和一次真实上游对话',
     '注入本机客户端':'将该账号登录态写入本机客户端',
     '刷新余额与到期快照':'同步最新余额及积分包到期信息',
     '导出登录态':'下载该账号凭据，供备份或重新导入',
@@ -2421,7 +2699,6 @@ async function clearAccountCooldown(accountId) {
 }
 
 function accRow(a) {
-  const soon = Number(a.credits_expiring_soon || 0);
   // 图标操作按钮抽成数组：顺序/配色一处可调，比 9 个 button 平铺更好维护
   const ops = [
     [`WBReview.accountLimit(${a.id})`, "fa-sliders", "text-indigo-600", "账号并发上限"],
@@ -2430,6 +2707,7 @@ function accRow(a) {
     [`catTravel(${a.id})`, "fa-cat", "text-pink-600", "猫猫旅行"],
     [`viewCreditDetails(${a.id},'${esc(a.name||'')}')`, "fa-list-ul", "text-amber-600", "积分明细（逐包到期日）"],
     [`viewRequestUsage(${a.id},'${esc(a.name||'')}')`, "fa-chart-line", "text-blue-600", "请求用量"],
+    [`healthCheckAcc(${a.id})`, "fa-heart-pulse", "text-emerald-600", "三项健康检查：积分、模型列表、真实对话"],
     [`injectAcc(${a.id})`, "fa-right-to-bracket", "text-violet-600", "注入本机客户端"],
     [`refreshAcc(${a.id})`, "fa-rotate", "text-indigo-600", "刷新余额与到期快照"],
     [`exportAcc(${a.id},'${esc(a.name||'')}')`, "fa-file-export", "text-sky-600", "导出登录态"],
@@ -2440,6 +2718,9 @@ function accRow(a) {
   // 窄屏下表格变成卡片，靠 `td::before { content: attr(data-label) }`
   // 在每行左边补出「总积分 / 剩余 / 积分到期」这些标签，
   // 这样同一份 DOM 既能当表格又能当卡片，不必写两套渲染逻辑。
+  // 「剩余」列只放数字：7 天内到期量不再跟可变后缀「(xx)」——右对齐的是
+  // 「数字+后缀」整体，有后缀的行数字会被推左，整列数字上下对不齐。
+  // 该数字与「积分到期」列的 🔥 徽标同源同值，去掉不丢信息。
   return `<tr>
     <td class="c-name">
       <div class="nm">
@@ -2452,9 +2733,7 @@ function accRow(a) {
     </td>
     <td class="col-status" data-label="状态">${badge(a.status)}${accountLimitBadge(a)}</td>
     <td class="tnum text-right" data-label="总积分" style="color:var(--fg-muted)">${a.balance_total}</td>
-    <td class="tnum text-right font-medium" data-label="剩余" style="color:${a.balance_remain>0?'var(--ok,#059669)':'var(--danger)'}">
-      ${a.balance_remain}${soon > 0 ? `<span class="fs-10-5" style="color:var(--warn)"> (${fmtCredit(soon)})</span>` : ""}
-    </td>
+    <td class="tnum text-right font-medium" data-label="剩余" style="color:${a.balance_remain>0?'var(--ok,#059669)':'var(--danger)'}">${a.balance_remain}</td>
     <td data-label="积分到期">${accExpiryCell(a)}${a.credits_collection ? `<small class="billing-state" data-tooltip="账单采集状态" data-tooltip-description="${esc((a.credits_collection.compatibility_fallback ? '兼容接口快照' : a.credits_collection.snapshot_preserved ? '保留上次完整快照' : '三路完整快照') + ' · ' + (a.credits_collection.failed_sources || []).join(' / ') + (a.credits_collection.remaining_difference == null ? '' : ' · 对账差值 ' + a.credits_collection.remaining_difference))}">${a.credits_collection.snapshot_preserved ? '采集不完整' : a.credits_collection.compatibility_fallback ? '兼容快照' : a.credits_collection.remaining_difference ? '账单有差异' : '三路已核对'}</small>` : ''}</td>
     <td class="c-ops" data-label="操作">${ops.map(([fn, ic, col, ttl]) =>
       `<button onclick="${fn}" class="${col}" data-tooltip="${ttl}" data-tooltip-description="${esc(accountActionDescription(ttl))}" aria-label="${ttl}">${consoleIcon(ic)}</button>`).join("")}</td>
@@ -2572,6 +2851,52 @@ async function refreshAcc(id){
   }
   if (r.ok && data?.warnings?.length) openModal(`<h3>余额已刷新，到期快照未完整更新</h3>${data.warnings.map(upstreamEvidenceHtml).join('')}`, 'max-w-3xl');
   if (r.ok) { loadAccounts(); if (_creditStats) loadCreditStats(); }
+}
+function healthStageText(item) {
+  const stages = item.stages || {};
+  const label = {balance:'积分', models:'模型列表', conversation:'真实对话'};
+  return Object.keys(label).map(key => {
+    const stage = stages[key] || {};
+    if (stage.ok && key === 'balance') return `${label[key]}通过 ${stage.remain ?? 0}/${stage.total ?? 0}`;
+    if (stage.ok && key === 'models') return `${label[key]}通过 ${stage.count ?? 0} 个`;
+    if (stage.ok && key === 'conversation') return `${label[key]}通过 ${stage.model || ''}${stage.free_model ? '（免费）' : '（可能消耗少量积分）'}`;
+    return `${label[key]}失败${stage.status ? ' HTTP ' + stage.status : ''}${stage.code ? ' / ' + stage.code : ''}${stage.message ? '：' + stage.message : ''}`;
+  }).join(' · ') || item.reason || '';
+}
+function healthStageIcon(item) {
+  return item.healthy
+    ? '<i class="fa-solid fa-circle-check text-emerald-500 shrink-0"></i>'
+    : item.status === 'skipped'
+      ? '<i class="fa-solid fa-minus-circle text-slate-400 shrink-0"></i>'
+      : '<i class="fa-solid fa-circle-xmark text-red-500 shrink-0"></i>';
+}
+function healthCheckOptions(submitUrl, title, total) {
+  return {
+    title, submitUrl, body: {},
+    label: item => item.account || item.account_id,
+    detail: item => healthStageText(item),
+    amount: item => item.healthy ? '<span class="text-emerald-600 font-semibold">健康</span>' : '',
+    icon: healthStageIcon,
+    doneText: job => job.result?.summary || `检查完成：${job.result?.healthy || 0}/${total} 个账号健康`,
+    summaryHtml: job => job.result?.summary || '',
+    doneToast: job => job.result?.summary || '健康检查完成',
+    onFinish: () => loadAccounts(),
+  };
+}
+async function healthCheckAcc(id) {
+  if (!await uiConfirm({kind:'info', danger:false, title:'账号三项健康检查',
+      message:'依次调用积分、模型列表和一次最大输出 1 token 的真实对话。优先免费模型；没有免费模型时可能消耗少量积分。失败只显示诊断，不会因此禁用账号；三项通过可恢复由自动失效判断禁用的账号。',
+      okText:'开始检查'})) return;
+  await accountBatchAction(() => runJob(healthCheckOptions(
+    `/api/accounts/${id}/health-check`, '账号三项上游健康检查', 1)));
+}
+async function healthCheckAll() {
+  if (!_accData.length) { toast('没有可检查的账号', 'err'); return; }
+  if (!await uiConfirm({kind:'info', danger:false, title:'一键健康检查',
+      message:`将对全部 ${_accData.length} 个账号依次调用积分、模型列表和一次最大输出 1 token 的真实对话。优先免费模型；没有免费模型时可能消耗少量积分。检查失败只显示诊断，不会因此禁用账号。`,
+      okText:'开始检查'})) return;
+  await accountBatchAction(() => runJob(healthCheckOptions(
+    '/api/accounts/health-check-batch', '账号池三项上游健康检查', _accData.length)));
 }
 async function toggleAcc(id,st){ await api("/api/accounts/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:st})}); loadAccounts(); }
 async function delAcc(id){ if(!await uiConfirm({message:"确认删除该账号？", title:"删除账号"}))return; const r=await api("/api/accounts/"+id,{method:"DELETE"}); toast(r.ok?"已删除":"删除失败",r.ok?"ok":"err"); if(r.ok) loadAccounts(); }
@@ -4762,9 +5087,12 @@ function modelHealthCell(model) {
   const row = _modelHealth[model] || {}, probe = _modelProbes[model];
   const ms = value => value == null ? '—' : Math.round(value) + ' ms';
   const ttft = row.ttfb_ms || {};
+  const tps = row.tps || {};
+  const tpsText = tps.samples ? `TPS P50 ${tps.p50 ?? '—'} / 均值 ${tps.mean ?? '—'}` : 'TPS 暂无样本';
   const health = row.requests ? `成功 ${(100 * row.success_rate).toFixed(1)}% · ${row.requests} 次` : '暂无调用样本';
   return `<div class="model-health-cell"><span>${health}</span>
     <small title="最近 24 小时成功调用首字延迟，包含网络、上游排队与推理耗时">首字 P50 ${ms(ttft.p50)} / P95 ${ms(ttft.p95)}</small>
+    <small title="吞吐 TPS = 总 Token / 端到端耗时，仅统计耗时 ≥1s 的成功请求（${tps.samples || 0} 个样本）。短请求分母小、数值虚高，已剔除">正常 ${tpsText}</small>
     <small title="P95 与 P50 的差值，反映请求延迟波动，不等同于网络 RTT 抖动">延迟波动 ${ms(ttft.p95 == null ? null : ttft.p95 - ttft.p50)} · 可用 ${row.available_accounts ?? '—'} 账号</small>
     ${probe ? `<small title="${esc(fmtTime(probe.observed_at))}">检测：${ms(probe.ttft_ms)} · 响应头 ${ms(probe.headers_ms)}</small><small title="增量到达间隔的标准差，包含模型生成与网络传输">输出间隔波动 ${ms(probe.inter_delta_jitter_ms)}</small>` : ''}</div>`;
 }
@@ -5063,8 +5391,8 @@ async function pushToOnline(){
   }catch(e){ toast("推送异常: "+e.message,"err"); }
 }
 
-/* ==================== 客户端参数（UA / 版本号 / 风控头） ====================
-   这些值决定我们的出站请求「像不像官方客户端」。它们可以：
+/* ==================== 客户端兼容参数（UA / 版本号 / 请求头） ====================
+   这些值用于对齐客户端协议中可验证的版本与请求头格式。它们可以：
      1. 现场探测（本机装了 WorkBuddy 就能读到真实版本号/风控配置）
      2. 在后台手动改（改完立即生效，不必重启进程）
      3. 随「同步到线上」一起推给线上实例
@@ -5084,6 +5412,8 @@ const _CP_FIELDS = [
   ["turing_product_name", "风控产品名", "text", "天御 SDK productName"],
   ["commit",          "commit", "text", "安装包提交号"],
   ["release_date_ms", "发布日期(ms)", "int", "安装包构建时间戳"],
+  ["node_version",    "内嵌 Node 版本", "text", "X-Stainless-Runtime-Version（装了客户端会自动探测精确值）"],
+  ["stainless_package_version", "SDK 版本", "text", "X-Stainless-Package-Version（官方内嵌 stainless SDK）"],
 ];
 const _CP_FP_FIELDS = [
   ["fp_product",   "指纹 product", "text", "遥测里的产品形态（官方为 SaaS），与请求头 X-Product 不同"],
@@ -5097,13 +5427,29 @@ const _CP_FP_FIELDS = [
   ["report_delay", "上报延迟(ms)", "int", ""],
 ];
 
-function _cpInput(id, label, type, hint, val){
+function _cpInput(id, label, type, hint, val, srcBadge){
   const it = type === "int" ? "number" : "text";
   return `<label class="block mb-2">
-      <span class="block text-xs text-slate-500 mb-1">${esc(label)}${hint?` <span class="text-slate-300">· ${esc(hint)}</span>`:""}</span>
+      <span class="block text-xs text-slate-500 mb-1">${esc(label)}${srcBadge||""}${hint?` <span class="text-slate-300">· ${esc(hint)}</span>`:""}</span>
       <input id="${id}" type="${it}" value="${val===undefined||val===null?"":esc(String(val))}"
              class="w-full border rounded-lg px-3 py-1.5 text-sm font-mono" />
     </label>`;
+}
+
+// 来源徽标：把「安装包实测 / 本机系统 / 已保存 / 环境变量 / 兜底默认」标成彩色小标签，
+// 让一眼能分清哪些是官方客户端实测值、哪些仍是协议兼容参考值（不是实测）。
+function _cpSourceBadge(s){
+  const t = String(s||"");
+  let label = "", cls = "";
+  if(t.startsWith("环境变量")){ label = "环境变量"; cls = "text-amber-600 border-amber-300"; }
+  else if(t.includes("安装包")){ label = "安装包实测"; cls = "text-emerald-600 border-emerald-300"; }
+  else if(t.includes("本机系统")){ label = "本机系统"; cls = "text-emerald-600 border-emerald-300"; }
+  else if(t === "已保存"){ label = "已保存"; cls = "text-sky-600 border-sky-300"; }
+  else if(t === "内置兜底"){ label = "兜底默认"; cls = "text-slate-400 border-slate-300"; }
+  else if(t){ label = "现场探测"; cls = "text-emerald-600 border-emerald-300"; }
+  return label
+    ? `<span class="inline-block align-middle ml-1 px-1.5 py-0.5 border rounded text-[10px] leading-none ${cls}" title="来源：${esc(t)}">${label}</span>`
+    : "";
 }
 
 async function loadClientProfile(){
@@ -5121,6 +5467,8 @@ async function loadClientProfile(){
   const eff = d.effective || {}, sav = d.saved || {}, det = d.detected || {};
   const src = d.sources || {};
 
+  renderClientRuntimeDiagnostics(d.runtime_diagnostics);
+
   // 生效中的 UA
   if($("#clientUa")) $("#clientUa").textContent = eff.user_agent || "（未知）";
 
@@ -5137,30 +5485,27 @@ async function loadClientProfile(){
     </div>
     <div class="mt-2 text-slate-400">${
       hasClient
-        ? "本机装了客户端，现场探测会优先给出真实版本号；改动版本后无需重启进程即刻生效。"
+        ? "本机装了客户端：版本号/风控配置从安装包读取，OS/硬件/时区按本机系统实测（与官方客户端取值公式一致）；改动版本后无需重启进程即刻生效。"
         : "本机未探测到客户端（线上服务器属正常）。线上实例请用「钉住已保存值」，否则会退化成内置兜底版本号。"
     }</div>
     ${d.source!=="saved" && !hasClient
       ? `<div class="mt-1 text-amber-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>建议切换到「钉住已保存值」，否则本机探测不到时会用兜底值。</div>`
       : ""}`;
 
-  // 字段：显示生效值，并在悬浮提示里标出来源
+  // 字段：显示生效值；标签旁的彩色徽标标出来源（悬停可见完整来源说明）
   const render = (defs, mount) => {
     const el = $(mount); if(!el) return;
     el.innerHTML = defs.map(([k,label,type,hint]) => {
       const v = eff[k] !== undefined ? eff[k] : "";
       const s = src[k] || "";
-      const cls = s.startsWith("环境变量") ? "text-amber-600"
-                : (s === "内置兜底" ? "text-slate-400"
-                : (s === "已保存" ? "text-sky-600" : "text-emerald-600"));
       return `<div title="来源：${esc(s)}">${_cpInput("cp_"+k, label, type,
-        (hint?hint+" · ":"") + s, v)}</div>`;
+        hint || "", v, _cpSourceBadge(s))}</div>`;
     }).join("");
   };
   render(_CP_FIELDS, "#clientFields");
   render(_CP_FP_FIELDS, "#clientFpFields");
 
-  // 风控头：默认头 + 保存头 合并后的结果，可直接编辑
+  // 可选客户端头：档案与保存值合并后的结果，仅用于查看/明确支持的业务
   const hs = eff.headers || {};
   const hEl = $("#clientHeaders");
   if(hEl){
@@ -5173,13 +5518,54 @@ async function loadClientProfile(){
       `<button onclick="_cpAddHeader()" class="text-xs px-2 py-1 rounded border hover:bg-slate-50 mt-1"><i class="fa-solid fa-plus mr-1"></i>添加请求头</button>`;
   }
 
-  // 来源表（排障）
+  // 来源表（排障）：按来源类别着色
   const sEl = $("#clientSources");
   if(sEl){
+    const srcCls = v => String(v).startsWith("环境变量") ? "text-amber-600"
+      : String(v) === "内置兜底" ? "text-slate-400"
+      : String(v) === "已保存" ? "text-sky-600"
+      : (String(v).includes("安装包") || String(v).includes("本机系统")) ? "text-emerald-600"
+      : "text-slate-600";
     sEl.innerHTML = Object.keys(src).sort()
-      .map(k => `<div><span class="text-slate-400">${esc(k)}</span> <span class="${String(src[k]).startsWith("环境变量")?"text-amber-600":"text-slate-600"}">${esc(src[k])}</span></div>`)
+      .map(k => `<div><span class="text-slate-400">${esc(k)}</span> <span class="${srcCls(src[k])}">${esc(src[k])}</span></div>`)
       .join("");
   }
+}
+
+function renderClientRuntimeDiagnostics(diag){
+  const el = $("#clientRuntimeDiagnostics");
+  if(!el) return;
+  const d = diag || {};
+  const tok = d.device_token || {};
+  const tokenOk = tok.available === true;
+  const tokenClass = tokenOk ? "text-emerald-600" : "text-amber-600";
+  const tokenText = tokenOk ? "原生 SDK 令牌可用（本机实测）" :
+    (!tok.checked ? "尚无 SDK 令牌缓存" :
+      (tok.cached_failure ? "原生 SDK 暂不可用（已有失败缓存）" : "原生 SDK 令牌不可用"));
+  const boolText = v => v ? "可用" : "不可用";
+  const groups = d.header_groups || {};
+  // 每组头的来源：档案值标明探测/保存来源；账号会话头来自当前凭据。
+  const groupOrigin = {
+    client_profile: "档案值（探测/保存/兜底，见上方字段徽标）",
+    sdk_stainless: "SDK 资料（仅在明确使用该 SDK 的业务中适用）",
+    account_session: "账号凭据/会话字段",
+    request_trace: "调用方明确提供的关联字段",
+  };
+  const groupHtml = Object.keys(groups).sort().map(name => {
+    const headers = Array.isArray(groups[name]) ? groups[name] : [];
+    return `<div class="mb-1"><span class="text-slate-400">${esc(name)}</span>`+
+      (groupOrigin[name]?` <span class="text-[10px] text-slate-400">〔${esc(groupOrigin[name])}〕</span>`:"")+
+      `· <span class="font-mono">${esc(headers.join(", "))}</span></div>`;
+  }).join("");
+  el.innerHTML = `<div class="flex flex-wrap gap-x-6 gap-y-1 mb-2">`+
+    `<span>运行平台：<b class="font-mono">${esc(d.platform || "—")}</b></span>`+
+    `<span>设备令牌：<b class="${tokenClass}">${esc(tokenText)}</b></span>`+
+    `<span>Node：<b>${esc(boolText(tok.node_available))}</b></span>`+
+    `<span>Native helper：<b>${esc(boolText(tok.helper_available))}</b></span>`+
+    `</div>`+
+    `<div class="text-slate-400 mb-1">请求头字段组（部分字段按请求上下文动态生成）：</div>`+
+    `<div class="font-mono break-all">${groupHtml || "—"}</div>`+
+    `<div class="mt-2 text-slate-400">服务器没有官方原生 SDK 时会明确显示不可用；不要手工填写或伪造设备令牌。客户端参数区的值只用于对齐协议中可验证的版本与请求头；账号身份、会话令牌和链路头由请求运行时生成，不代表官方客户端的实测值。</div>`;
 }
 
 function _cpAddHeader(){
@@ -5237,17 +5623,28 @@ async function detectClient(){
   const d = await r.json().catch(()=>({}));
   if(!r.ok){ toast("探测失败","err"); return; }
   const det = d.detected || {};
+  const origins = d.detected_origins || {};
+  renderClientRuntimeDiagnostics(d.runtime_diagnostics);
   const n = Object.keys(det).length;
   const el = $("#clientStatus");
   if(el){
-    el.innerHTML = n
-      ? `<span class="text-emerald-600">探测到 ${n} 项</span>：<code class="text-xs">${esc(JSON.stringify(det))}</code>
-         <div class="text-xs text-slate-400 mt-1">点「保存」可把探测结果钉住（线上同步时会带过去）。</div>`
-      : `<span class="text-amber-600">未探测到本机客户端</span>：${esc(d.message||"")}`;
+    if(n){
+      const pkg = Object.keys(det).filter(k=>origins[k]==="安装包");
+      const sysd = Object.keys(det).filter(k=>origins[k]==="本机系统");
+      const other = Object.keys(det).filter(k=>origins[k]!=="安装包"&&origins[k]!=="本机系统");
+      const lst = keys => keys.map(k=>`${k}=${det[k]}`).join("，");
+      el.innerHTML = `<span class="text-emerald-600">探测到 ${n} 项</span>
+        <div class="text-xs mt-1"><span class="text-emerald-600">安装包（${pkg.length}）：</span><code class="text-xs break-all">${esc(lst(pkg))}</code></div>
+        <div class="text-xs mt-1"><span class="text-emerald-600">本机系统（${sysd.length}）：</span><code class="text-xs break-all">${esc(lst(sysd))}</code></div>
+        ${other.length?`<div class="text-xs mt-1"><span class="text-emerald-600">其它（${other.length}）：</span><code class="text-xs break-all">${esc(lst(other))}</code></div>`:""}
+        <div class="text-xs text-slate-400 mt-1">点「保存」可把探测结果钉住（线上同步时会带过去）。</div>`;
+    } else {
+      el.innerHTML = `<span class="text-amber-600">未探测到本机客户端</span>：${esc(d.message||"")}`;
+    }
   }
   // 探测到就把值填进表单，方便一键保存
   if(n){
-    _CP_FIELDS.forEach(([k]) => {
+    _CP_FIELDS.concat(_CP_FP_FIELDS).forEach(([k]) => {
       const inp = $("#cp_"+k);
       if(inp && det[k] !== undefined) inp.value = det[k];
     });
@@ -5508,7 +5905,6 @@ const _scheduleRequests = new Set();
 // 任务类型 -> 人话名称。结果里有 summary 就用它，这样每个任务都统一可读。
 // keepalive_tokens 是既有任务（保活）但两张表都漏了它，显得像"未知任务"。
 const TASK_LABELS = {
-  claim_benefits: "检查并领取权益",
   daily_checkin: "签到领取积分",
   refresh_balances: "刷新平台总积分",
   refresh_credits: "更新积分到期快照",
@@ -6131,8 +6527,9 @@ function initLogSelects() {
   fillLogFilterOptions();
   const daysBox = $("#logDaysSel");
   if (daysBox) daysBox.outerHTML = uiSelectHTML("logDaysSel", {
-    value: "1",
+    value: "today",
     options: [
+      { value: "today", label: "今日（自然日）" },
       { value: "1", label: "近 1 天" }, { value: "3", label: "近 3 天" },
       { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" },
       { value: "0", label: "不限时间" },
@@ -6191,7 +6588,9 @@ function loadLogAccounts(force = false) {
 
 /** 当前筛选 → query string，并生成一句人话提示。 */
 function _logQuery() {
-  const days = parseInt(uiSelectValue("logDaysSel") || "1", 10) || 0;
+  const daysRaw = uiSelectValue("logDaysSel") || "today";
+  const isToday = daysRaw === "today";
+  const days = parseInt(daysRaw, 10) || 0;
   const accountId = uiSelectValue("logAccountSel") || "";
   const model = ($("#logModel") ? $("#logModel").value : "").trim();
   const key = ($("#logKey") ? $("#logKey").value : "").trim();
@@ -6206,8 +6605,14 @@ function _logQuery() {
   if (model) p.set("model", model);
   if (key) p.set("key", key);
   if (ip) p.set("client_ip", ip);
-  // 时间范围：显式日期优先，否则用「近 N 天」自动算起点（0 = 不限）
+  // 时间范围：显式日期优先，「今日」= 北京时间 00:00 起的自然日（与账号池
+  // 「今日已用」同一口径），否则按「近 N 天」滚动窗口（0 = 不限）
   if (start) p.set("start", start + " 00:00:00");
+  else if (isToday) {
+    const t = new Date(Date.now() + 8 * 3600000);
+    const cnMidnight = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()) - 8 * 3600000;
+    p.set("start", new Date(cnMidnight).toISOString());
+  }
   else if (days > 0) {
     const d0 = new Date(Date.now() - days * 86400000);
     p.set("start", d0.toISOString());
@@ -6225,6 +6630,7 @@ function _logQuery() {
   if (key) conds.push(`Key=${key}`);
   if (ip) conds.push(`IP=${ip}`);
   if (start || end) conds.push(`日期=${start || "…"}~${end || "…"}`);
+  else if (isToday) conds.push("今日（自然日）");
   else if (days > 0) conds.push(`近 ${days} 天`);
   if (fast) conds.push("快速翻页");
   return { qs: p.toString(), conds };
@@ -6259,14 +6665,14 @@ async function loadLogs(page, silent = false) {
   }
 
   const body = $("#logBody");
-  if (body && !silent) body.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center" style="color:var(--fg-subtle)">加载中...</td></tr>`;
+  if (body && !silent) body.innerHTML = `<tr><td colspan="11" class="px-4 py-8 text-center" style="color:var(--fg-subtle)">加载中...</td></tr>`;
   let d;
   try {
     const r = await api("/api/logs?" + params, {signal:controller.signal});
     const { ok, data } = await safeJson(r);
     if (loadSeq !== _logLoadSeq || filterSignature !== logFilterSignature()) return;
     if (!ok) {
-      if (body && !silent) body.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center text-red-500">加载失败：${esc(data.detail || "")}</td></tr>`;
+      if (body && !silent) body.innerHTML = `<tr><td colspan="11" class="px-4 py-8 text-center text-red-500">加载失败：${esc(data.detail || "")}</td></tr>`;
       return;
     }
     d = data;
@@ -6280,7 +6686,7 @@ async function loadLogs(page, silent = false) {
   } catch (e) {
     if (e && e.name === 'AbortError') return;
     if (loadSeq !== _logLoadSeq) return;
-    if (body && !silent) body.innerHTML = `<tr><td colspan="10" class="px-4 py-8 text-center text-red-500">加载异常：${esc(String(e && e.message || e))}</td></tr>`;
+    if (body && !silent) body.innerHTML = `<tr><td colspan="11" class="px-4 py-8 text-center text-red-500">加载异常：${esc(String(e && e.message || e))}</td></tr>`;
     return;
   } finally {
     if (loadSeq === _logLoadSeq) _logListController = null;
@@ -6300,7 +6706,7 @@ async function loadLogs(page, silent = false) {
   if (fast && d.next_before_id) _logBeforeId = d.next_before_id;
 
   $("#logBody").innerHTML = (d.items||[]).map(logRow).join("") ||
-    `<tr><td colspan="10"><div class="empty">${
+    `<tr><td colspan="11"><div class="empty">${
       conds.length ? "当前筛选条件下没有记录，试试放宽时间范围或清除筛选" : "还没有请求记录（代理产生调用后这里会出现）"
     }</div></td></tr>`;
 
@@ -6315,6 +6721,17 @@ async function loadLogs(page, silent = false) {
 }
 
 /** 单条日志行（抽出来便于与汇总区共用配色）。 */
+function hitRateHtml(l) {
+  // 命中率 = 缓存命中 token / 输入(prompt) token；无输入或不支持的请求显示 —
+  const pt = Number(l.prompt_tokens || 0), ct = Number(l.cached_tokens || 0);
+  if (!pt) return `<span class="text-xs" style="color:var(--fg-subtle)">—</span>`;
+  const pct = Math.min(100, ct / pt * 100);
+  const tone = pct >= 60 ? "var(--ok)" : pct >= 30 ? "#d97706" : "var(--fg-subtle)";
+  return `<div class="leading-tight tnum" title="缓存命中 ${fmtK(ct)} / 输入 ${fmtK(pt)}">
+    <span class="text-xs font-medium" style="color:${tone}">${pct.toFixed(0)}%</span>
+    <div class="pkg-track" style="width:44px;margin:2px 0 0"><i style="width:${Math.max(pct,2).toFixed(1)}%;background:${tone}"></i></div>
+  </div>`;
+}
 function logRow(l) {
   const tokenHtml = (l.prompt_tokens!=null || l.completion_tokens!=null)
     ? `<div class="leading-tight text-[11px] tnum">
@@ -6350,6 +6767,7 @@ function logRow(l) {
     <td class="text-xs" title="${esc(l.account_name)}">${esc((l.account_name||'').slice(0,14))}</td>
     <td class="font-mono text-[11px] whitespace-nowrap" title="${esc(l.model)}">${esc((l.model||'').slice(0,24))}<small class="block mt-1" style="color:var(--fg-muted)" title="客户端请求的思考强度；空值表示请求未指定或历史日志未记录">思考：${esc(l.reasoning_effort || '默认 / 未记录')}</small></td>
     <td>${tokenHtml}</td>
+    <td>${hitRateHtml(l)}</td>
     <td class="text-xs text-right">${credHtml}</td>
     <td>${latencyHtml}</td>
     <td class="text-xs" style="color:var(--fg-muted)" title="透传给上游的 X-Agent-Purpose">${esc((l.use_case||'—').slice(0,14))}</td>
@@ -6418,8 +6836,12 @@ async function loadLogSummary(silent = false) {
   try {
     const filters = new URLSearchParams(_logQuery().qs);
     ['page','page_size','before_id','with_total'].forEach(k => filters.delete(k));
-    if (!$('#logStart')?.value) filters.delete('start');
-    filters.set('days', $('#logStart')?.value ? '0' : String(days));
+    // 「今日」模式保留 _logQuery 注入的自然日起点（start 存在时后端忽略 days），
+    // 其余情况沿用旧行为：删掉 start，交给后端按 days 滚动窗口算。
+    const explicitStart = Boolean($('#logStart')?.value);
+    const todayMode = (uiSelectValue("logDaysSel") || "") === "today";
+    if (!explicitStart && !todayMode) filters.delete('start');
+    filters.set('days', explicitStart ? '0' : String(days));
     const r = await api('/api/logs/summary?' + filters, {signal:controller.signal});
     const { ok, data } = await safeJson(r);
     if (seq !== _logSummarySeq || filterSignature !== logFilterSignature() || _logFolded.summary) return;
@@ -6434,7 +6856,7 @@ async function loadLogSummary(silent = false) {
     box.innerHTML = `<table class="tbl" style="min-width:820px">
       <thead><tr>
         <th>账号</th><th class="text-right">请求数</th><th class="text-right">失败</th>
-        <th class="text-right">积分</th><th class="text-right">Token</th>
+        <th class="text-right">积分</th><th class="text-right">Token</th><th class="text-right">命中率</th>
         <th class="text-right">平均耗时</th><th>最近使用</th><th style="width:120px">积分占比</th>
       </tr></thead><tbody>${items.map(x => `
         <tr>
@@ -6443,6 +6865,7 @@ async function loadLogSummary(silent = false) {
           <td class="text-right tnum" style="color:${x.failed_requests > 0 ? 'var(--danger)' : 'var(--fg-subtle)'}">${x.failed_requests}</td>
           <td class="text-right tnum font-medium" style="color:var(--warn)">${fmtCredit(x.credits)}</td>
           <td class="text-right tnum" style="color:var(--fg-muted)">${fmtK(x.total_tokens)}</td>
+          <td class="text-right tnum font-medium" style="color:${x.prompt_tokens ? (x.cached_tokens / x.prompt_tokens >= .6 ? 'var(--ok)' : x.cached_tokens / x.prompt_tokens >= .3 ? '#d97706' : 'var(--fg-subtle)') : 'var(--fg-subtle)'}" title="缓存命中 ${fmtK(x.cached_tokens||0)} / 输入 ${fmtK(x.prompt_tokens||0)}">${x.prompt_tokens ? Math.min(100, x.cached_tokens / x.prompt_tokens * 100).toFixed(0) + '%' : '—'}</td>
           <td class="text-right tnum" style="color:var(--fg-muted)">${x.avg_latency_ms ? (x.avg_latency_ms/1000).toFixed(2)+'s' : '—'}</td>
           <td class="text-xs" style="color:var(--fg-subtle)">${fmtTime(x.last_used_at, false)}</td>
           <td><div class="pkg-track" style="margin:0"><i style="width:${Math.max(2, x.credits/maxC*100)}%"></i></div></td>
@@ -6460,7 +6883,7 @@ async function loadLogSummary(silent = false) {
 function resetLogFilters() {
   WBFilterCombobox.close();
   uiSelectSet("logAccountSel", "");
-  uiSelectSet("logDaysSel", "1");
+  uiSelectSet("logDaysSel", "today");
   ["logModel", "logKey", "logIp", "logStart", "logEnd", "logResult"].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = "";
   });
@@ -6492,7 +6915,8 @@ function fillLogFilterOptions(){
 }
 
 async function exportLogs(diagnostics = false){
-  const days = parseInt(uiSelectValue("logDaysSel") || "1", 10) || 0;
+  const daysRaw = uiSelectValue("logDaysSel") || "today";
+  const days = parseInt(daysRaw, 10) || 0;
   const accountId = uiSelectValue("logAccountSel") || "";
   const model = ($("#logModel") ? $("#logModel").value : "").trim();
   const key = ($("#logKey") ? $("#logKey").value : "").trim();
@@ -6505,6 +6929,12 @@ async function exportLogs(diagnostics = false){
   if(key) params.push("key=" + encodeURIComponent(key));
   if(ip) params.push("client_ip=" + encodeURIComponent(ip));
   if(start) params.push("start=" + encodeURIComponent(start + " 00:00:00"));
+  else if(daysRaw === "today") {
+    const t = new Date(Date.now() + 8 * 3600000);
+    const iso = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()) - 8 * 3600000)
+      .toISOString().slice(0,19).replace("T"," ");
+    params.push("start=" + encodeURIComponent(iso));
+  }
   else if(days > 0) params.push("start=" + encodeURIComponent(
     new Date(Date.now() - days*86400000).toISOString().slice(0,19).replace("T"," ")));
   if(end) params.push("end=" + encodeURIComponent(end + " 23:59:59"));
@@ -6822,10 +7252,11 @@ function initUsageSelects() {
   _usageSelReady = true;
   const daysBox = $("#usageDaysSel");
   if (daysBox) daysBox.outerHTML = uiSelectHTML("usageDaysSel", {
-    // 默认近 1 天 + 按小时：最常见的诉求是「今天怎么样」，
-    // 默认 14 天会把当天异常稀释进两周曲线里
-    value: "1",
+    // 默认今日（自然日）+ 按小时：最常见的诉求是「今天怎么样」，
+    // 与账号池「今日已用」同口径；要看滚动窗口（含昨日流量）选「近 N 天」
+    value: "today",
     options: [
+      { value: "today", label: "今日（自然日）" },
       { value: "1", label: "近 1 天" },
       { value: "3", label: "近 3 天" },
       { value: "7", label: "近 7 天" },
@@ -6854,7 +7285,7 @@ function initUsageSelects() {
     $("#" + id).addEventListener("change", () => {
       _usageFilterReady = false;
       if ($("#usageStart").value || $("#usageEnd").value) uiSelectSet("usageDaysSel", "custom");
-      else uiSelectSet("usageDaysSel", "1");
+      else uiSelectSet("usageDaysSel", "today");
     });
   }
 }
@@ -6869,6 +7300,11 @@ function _usageTimeParams() {
   if (start || end) {
     if (start) params.set("start", new Date(start + "T00:00:00").toISOString());
     if (end) params.set("end", new Date(end + "T23:59:59.999").toISOString());
+  } else if (uiSelectValue("usageDaysSel") === "today") {
+    // 今日 = 北京时间 00:00 起的自然日（与账号池「今日已用」同口径）
+    const t = new Date(Date.now() + 8 * 3600000);
+    const cnMidnight = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()) - 8 * 3600000;
+    params.set("start", new Date(cnMidnight).toISOString());
   } else params.set("days", String(Number(uiSelectValue("usageDaysSel")) || 1));
   return params;
 }
@@ -6948,7 +7384,7 @@ function resetUsageFilters() {
   uiSelectSet("usageModelSel", "", false);
   uiSelectSet("usageCaseSel", "", false);
   uiSelectSet("usageAccountSel", "", false);
-  uiSelectSet("usageDaysSel", "1", false);
+  uiSelectSet("usageDaysSel", "today", false);
   for (const id of ["usageStart", "usageEnd"]) { $("#" + id).value = ""; window.WBDateTimePicker?.sync(id); }
   _usageFilterReady = false;
   loadUsageStats();
@@ -6971,7 +7407,10 @@ function _usageQuery() {
   const keyName = ((_usageOpts.keys || []).find(k => String(k.id) === key) || {}).name || key;
   const conds = [];
   const start = $("#usageStart").value, end = $("#usageEnd").value;
+  const daysMode = uiSelectValue("usageDaysSel") || "today";
   if (start || end) conds.push("日期=" + (start || "…") + " ~ " + (end || "…"));
+  else if (daysMode === "today") conds.push("今日（自然日）");
+  else if (daysMode !== "custom" && Number(daysMode) > 0) conds.push(`近 ${daysMode} 天（滚动）`);
   if (key) conds.push(`Key=${keyName}`);
   if (model) conds.push(`模型=${model}`);
   if (cs) conds.push(`端点=${cs}`);
@@ -7060,9 +7499,61 @@ async function loadUsageStats() {
  */
 
 
-// 点击空白处收起所有下拉
+
+/* ==================== 手风琴（details）开合动画 ====================
+   原生 details 开合是瞬间跳变。这里接管 summary 的点击：把 summary 之外的
+   内容包进 .acc-body（只包一次），用 height + opacity 过渡实现展开/收起，
+   动画结束后交还给原生 open 状态（键盘/无障碍行为不变）。 */
+(function () {
+  function accWrap(d) {
+    let w = d.querySelector(":scope > .acc-body");
+    if (!w) {
+      w = document.createElement("div");
+      w.className = "acc-body";
+      [...d.children].forEach(c => { if (c.tagName !== "SUMMARY") w.appendChild(c); });
+      d.appendChild(w);
+    }
+    return w;
+  }
+  document.addEventListener("click", (e) => {
+    const sum = e.target.closest && e.target.closest("summary");
+    if (!sum) return;
+    const d = sum.closest("details");
+    if (!d || d.hasAttribute("data-no-anim")) return;
+    e.preventDefault();
+    if (d.classList.contains("animating")) return;
+    const wrap = accWrap(d);
+    d.classList.add("animating");
+    const D = 230;
+    if (d.open) {
+      const h = wrap.scrollHeight;
+      wrap.style.height = h + "px";
+      void wrap.offsetWidth;
+      wrap.style.height = "0px";
+      wrap.style.opacity = "0";
+      setTimeout(() => {
+        d.open = false;
+        wrap.style.height = ""; wrap.style.opacity = "";
+        d.classList.remove("animating");
+      }, D);
+    } else {
+      d.open = true;
+      const h = wrap.scrollHeight;
+      wrap.style.height = "0px"; wrap.style.opacity = "0";
+      void wrap.offsetWidth;
+      wrap.style.height = h + "px";
+      wrap.style.opacity = "1";
+      setTimeout(() => {
+        wrap.style.height = ""; wrap.style.opacity = "";
+        d.classList.remove("animating");
+      }, D);
+    }
+  }, true);
+})();
+
+// 点击空白处收起所有下拉（带上收动画）
 document.addEventListener("click", () => {
-  document.querySelectorAll(".ui-select.open").forEach(x => x.classList.remove("open"));
+  document.querySelectorAll(".ui-select.open").forEach(x => uiSelectClose(x));
 });
 
 
@@ -7128,16 +7619,117 @@ if (TOKEN && !new URLSearchParams(location.search).has("desktop")) {
   });
 } else { /* 显示登录 */ }
 </script>
-<script src="/static/growth_center.js"></script>
-<script src="/static/benefits.js"></script>
-<script src="/static/date-time-picker.js"></script>
-<script src="/static/review-improvements.js"></script>
+<script src="/admin/assets/growth_center.js"></script>
+<script src="/admin/assets/date-time-picker.js"></script>
+<script src="/admin/assets/review-improvements.js"></script>
 <script src="/static/vendor/marked-12.0.2.min.js"></script>
 <script src="/static/vendor/dompurify-3.4.17.min.js"></script>
-<script src="/static/release-notes.js"></script>
-<script src="/static/desktop.js"></script>
-<script src="/static/profile-transfer.js"></script>
-<script src="/static/ip-management.js"></script>
-<script src="/static/key-ip.js"></script>
+<script src="/admin/assets/release-notes.js"></script>
+<script src="/admin/assets/desktop.js"></script>
+<script src="/admin/assets/profile-transfer.js"></script>
+<script src="/admin/assets/ip-management.js"></script>
+<script src="/admin/assets/key-ip.js"></script>
+<script>
+/* 模型使用统计：按模型查看当日账号可用性 / 用量 / 日额度估算。 */
+let _modelPoolList = [], _modelPoolCurrent = "";
+const MODEL_POOL_LIMIT_KINDS = {model_rate: "短时限流", model_queue: "上游排队", model_block: "模型不可用"};
+async function loadModelPoolDetail(model) {
+  const target = model || _modelPoolCurrent;
+  if (!target) return;
+  _modelPoolCurrent = target;
+  const note = $("#modelPoolNote"); if (note) note.textContent = "加载中…";
+  try {
+    const {ok, data} = await safeJson(await api("/api/stats/model-pool?model=" + encodeURIComponent(target)));
+    if (!ok) throw new Error(typeof data.detail === "string" ? data.detail : "加载失败");
+    renderModelPoolDetail(data);
+    if (note) note.textContent = data.note || "";
+  } catch (error) {
+    const rows = $("#modelPoolRows"), stats = $("#modelPoolStats");
+    if (rows) rows.innerHTML = `<tr><td colspan="8" class="text-center py-4" style="color:var(--fg-subtle)">加载失败：${esc(error.message)}</td></tr>`;
+    if (stats) stats.textContent = "";
+    if (note) note.textContent = "";
+  }
+}
+async function loadModelPoolList(preserve) {
+  try {
+    const {ok, data} = await safeJson(await api("/api/stats/model-pool"));
+    if (!ok) return;
+    _modelPoolList = data.models || [];
+    const host = $("#modelPoolSelectHost"); if (!host) return;
+    const current = preserve && _modelPoolCurrent ? _modelPoolCurrent
+      : (_modelPoolList.length
+          ? _modelPoolList.reduce((a, b) => (b.tokens_today || 0) > (a.tokens_today || 0) ? b : a).model
+          : "");
+    host.innerHTML = uiSelectHTML("modelPoolSelect", {
+      placeholder: "选择模型",
+      options: _modelPoolList.map(m => ({
+        value: m.model,
+        label: `${m.model}${m.enabled ? "" : "（未启用）"} · 今日 ${fmtNum(m.tokens_today)} Token${m.exhausted_accounts ? ` · ${m.exhausted_accounts} 个打满` : ""}`
+      })),
+      value: current,
+      onChange: value => loadModelPoolDetail(value)
+    });
+    initUISelects([["modelPoolSelect", "模型"]]);
+    if (current && current !== _modelPoolCurrent) await loadModelPoolDetail(current);
+  } catch (error) {
+    const note = $("#modelPoolNote");
+    if (note) note.textContent = "模型列表加载失败：" + (error && error.message ? error.message : error);
+  }
+}
+function _modelPoolBar(entry, quota) {
+  if (!quota) return `<div class="mp-bar"><span style="width:0%"></span></div>`;
+  const pct = Math.min(100, Math.round(entry.used_24h_tokens / quota * 100));
+  const tone = entry.daily_exhausted ? "var(--danger,#e54545)" : (pct >= 80 ? "var(--warn,#d97706)" : "var(--brand)");
+  return `<div class="mp-bar" title="近 24h 已用 ${fmtNum(entry.used_24h_tokens)} / 估算额度 ${fmtNum(quota)}（滚动 24h 口径）"><span style="width:${pct}%;background:${tone}"></span></div>`;
+}
+function renderModelPoolDetail(data) {
+  const s = data.summary || {}, quota = s.est_per_account_quota;
+  const fmtQuota = v => v == null ? "未知" : fmtNum(v);
+  $("#modelPoolStats").innerHTML = [
+    statCard("可用账号", `${s.usable_accounts ?? 0}`, { icon:"fa-users", iconColor:"text-emerald-600",
+      sub: `共 ${s.total_accounts ?? 0} 个 · 日耗尽 ${s.exhausted_accounts ?? 0} · 限流 ${s.model_limited_accounts ?? 0} · 冷却 ${s.cooling_accounts ?? 0} · 停用 ${s.inactive_accounts ?? 0}` }),
+    statCard("今日已用 Token", fmtNum(s.tokens_today ?? 0), { icon:"fa-fire", iconColor:"text-orange-500",
+      sub: `成功请求 ${fmtNum(s.requests_today ?? 0)} 次 · 北京时间 00:00 起${s.today_elapsed_hours != null ? `（已 ${Number(s.today_elapsed_hours).toFixed(1)} 小时）` : ""}` }),
+    statCard("近 24 小时（滚动）", fmtNum(s.rolling_24h ? s.rolling_24h.tokens : 0),
+      { icon:"fa-clock-rotate-left", iconColor:"text-indigo-500",
+        sub: `成功请求 ${fmtNum(s.rolling_24h ? s.rolling_24h.requests : 0)} 次 · 与「使用记录→近 1 天」同口径` }),
+    statCard("单账号额度（估·滚动 24h）", fmtQuota(quota), { icon:"fa-gauge-high", iconColor:"text-sky-500",
+      sub: quota == null ? "还没有账号打满，无法推断" : `按 ${s.quota_samples} 个已打满账号·打满时刻回看 24h 的实测均值` }),
+    statCard("剩余总额度（估）", s.est_total_remaining == null ? "未知" : fmtNum(s.est_total_remaining),
+      { icon:"fa-battery-half", iconColor:"text-emerald-600", tone:"brand",
+        sub: s.est_pool_capacity == null ? "选出模型后按可用账号估算"
+            : `可用 ${s.usable_accounts} 个 × 估算额度 ${fmtNum(quota)} = ${fmtNum(s.est_pool_capacity)}（剩余 = 额度 − 近 24h 已用）` })
+  ].join("");
+  const rows = (data.accounts || []).slice().sort((a, b) =>
+    (b.usable - a.usable) || (b.daily_exhausted - a.daily_exhausted) ||
+    (b.used_24h_tokens - a.used_24h_tokens) || (a.id - b.id));
+  $("#modelPoolRows").innerHTML = rows.map(entry => {
+    const state = entry.daily_exhausted
+      ? `<span class="badge bg-rose-100 text-rose-700" title="6004/6008 日额度负缓存${entry.daily_reset_at ? " · " + esc(fmtTime(entry.daily_reset_at)) + " 恢复" : ""}">日额度耗尽</span>`
+      : entry.limit_kind ? `<span class="badge bg-amber-100 text-amber-700">${esc(MODEL_POOL_LIMIT_KINDS[entry.limit_kind] || entry.limit_kind)}</span>`
+      : entry.usable ? `<span class="badge bg-emerald-100 text-emerald-700">可用</span>`
+      : entry.status !== "active" ? `<span class="badge bg-slate-200 text-slate-600">已停用</span>`
+      : entry.cooling ? `<span class="badge bg-amber-100 text-amber-700">账号冷却中</span>`
+      : `<span class="badge bg-amber-100 text-amber-700">暂不可选</span>`;
+    return `<tr>
+      <td><span class="font-medium">${esc(entry.name)}</span>${entry.uid ? `<span class="text-xs ml-1" style="color:var(--fg-subtle)">${esc(entry.uid)}</span>` : ""}</td>
+      <td>${state}</td>
+      <td class="text-right font-mono">${fmtNum(entry.used_24h_tokens)}</td>
+      <td>${_modelPoolBar(entry, quota)}</td>
+      <td class="text-right font-mono" title="今日自然日 ${fmtNum(entry.requests_today)} 次">${fmtNum(entry.requests_24h)}</td>
+      <td class="text-right font-mono">${entry.est_remaining == null ? '<span style="color:var(--fg-subtle)">—</span>' : fmtNum(entry.est_remaining)}</td>
+      <td class="text-right font-mono">${fmtNum(entry.balance_remain)}</td>
+      <td class="text-xs">${entry.daily_reset_at ? esc(fmtTime(entry.daily_reset_at)) : '<span style="color:var(--fg-subtle)">—</span>'}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="8" class="text-center py-4" style="color:var(--fg-subtle)">没有账号记录</td></tr>`;
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const panel = $("#modelPoolPanel");
+  if (!panel) return;
+  panel.addEventListener("toggle", () => {
+    if (panel.open && !_modelPoolList.length) loadModelPoolList(false);
+  });
+});
+</script>
 </body>
 </html>
