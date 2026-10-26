@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from admin import wb_login
 from admin.db import get_db
 from admin.models import Account
-from admin.ratelimit import get_client_ip
+from admin.ratelimit import client_ip_from_request
 from admin.security import require_admin
 
 _logger = logging.getLogger("admin.wb_login_router")
@@ -359,8 +359,7 @@ def login_start(_: bool = Depends(require_admin)):
 @router.post("/send")
 def login_send(body: SendIn, request: Request, _: bool = Depends(require_admin)):
     """第 2 步：给指定手机号发验证码。"""
-    ip = get_client_ip(request.headers.get("x-forwarded-for"), request.client.host
-                       if request.client else None)
+    ip = client_ip_from_request(request)
     return _send_guarded(body, ip)
 
 
@@ -712,8 +711,7 @@ def join_start(body: JoinIn, request: Request):
 @public_router.post("/api/join/send")
 def join_send(body: JoinIn, request: Request):
     """公开：发短信验证码。"""
-    ip = get_client_ip(request.headers.get("x-forwarded-for"),
-                       request.client.host if request.client else None)
+    ip = client_ip_from_request(request)
     return _send_guarded(body, ip)
 
 

@@ -149,8 +149,9 @@ async def _transcribe(request, db, key, audio, filename, mime, response_format):
             if sess is None:
                 continue
             upstream_http.select_account(request.scope, acc)
-            extra = await proxy._blocking_call(proxy.cprofile.risk_headers)
-            headers = proxy._headers_for_attempt(sess, extra)
+            # Reuse only headers produced by the account session. This route
+            # must not synthesize client-profile/device-risk headers.
+            headers = proxy._headers_for_attempt(sess, {})
             headers = {k: v for k, v in headers.items() if k.lower() not in ("content-type", "content-length")}
             await proxy._blocking_call(release_connection, db)
             async with upstream_http.client(request, httpx.Timeout(30, connect=10), backend.HTTP_LIMITS, retry_budget=budget) as client:

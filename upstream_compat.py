@@ -1106,7 +1106,7 @@ class StreamCommitBuffer:
 #   messages[].role == "developer"  →  HTTP 400 code=11128
 #       "Illegal API invocation from an unapproved channel"
 #   2026-10-21 新增：system 身份声明 "You are an AI agent powered by ..."
-#   同样可能返回 11128；只归一声明句式，保留名称与后续任务指令。
+#   同样可能返回 11128；已知 DSH 开头采用官方 WorkBuddy 介绍句式。
 #
 #   store / max_tokens / stream_options / tools /
 #   prompt_cache_key / prompt_cache_retention / metadata / user / service_tier
@@ -1125,6 +1125,14 @@ _HARNESS_IDENTITY_RE = re.compile(
     r"\bYou\s+are(?=\s+an\s+AI\s+agent\s+powered\s+by\b)",
     re.IGNORECASE,
 )
+_HARNESS_PRODUCT_INTRO_RE = re.compile(
+    r"^[ \t]*(?:You\s+are|Your\s+role\s+is)\s+an\s+AI\s+agent\s+powered\s+by\s+"
+    r"(?:DeepSeek(?:[ \t]+Harnes{1,2})?|Harnes{1,2}|sDeepSeek)[.!]?[ \t]*"
+    r"(?=\r?$)"
+    r"(?:(?:\r?\n[ \t]*)+You are a coding agent powered by the "
+    r"[^\r\n]+? model\.[ \t]*(?=\r?$))?",
+    re.I | re.M,
+)
 _HARNESS_GUI_SENTENCE = (
     "You are interacting with the user through the DeepSeek Harness Web GUI "
     "whose URL the runtime context names."
@@ -1133,11 +1141,27 @@ _HARNESS_GUI_REPLACEMENT = (
     "You are interacting with the user through the web client "
     "whose URL the runtime context names."
 )
+_HARNESS_CHECKOUT_SENTENCE = 'The runtime context names the DeepSeek Harness implementation checkout.'
+_HARNESS_CHECKOUT_REPLACEMENT = 'The runtime context names the client implementation checkout.'
 
 
-def _normalize_harness_identity_text(text):
+def _normalize_harness_identity_text(text, model=None):
+    count = 0
+
+    def rewrite_intro(fragment):
+        nonlocal count
+        # Match shipped product declarations, not user project rules or model IDs.
+        name = model.strip() if isinstance(model, str) and model.strip() else 'WorkBuddy'
+        fragment, changed = _HARNESS_PRODUCT_INTRO_RE.subn(
+            lambda _match: 'This conversation is powered by ' + name, fragment)
+        count += changed
+        count += fragment.count(_HARNESS_CHECKOUT_SENTENCE)
+        return fragment.replace(_HARNESS_CHECKOUT_SENTENCE, _HARNESS_CHECKOUT_REPLACEMENT)
+
+    text = rewrite_non_repository_text(text, rewrite_intro)
     # These fixed identity templates also fail inside system AGENTS.md sections.
-    return _normalize_harness_identity_fragment(text)
+    text, changed = _normalize_harness_identity_fragment(text)
+    return text, count + changed
 
 
 def _normalize_harness_identity_fragment(text):
@@ -1150,10 +1174,11 @@ def _normalize_harness_identity_fragment(text):
 
 
 def normalize_harness_identity(obj: dict) -> int:
-    """归一 system/developer 的身份声明句式，不绑定任何客户端名称。
+    """归一 system/developer 的身份声明及已知 DSH 产品介绍。
 
-    保留智能体名称、能力与任务指令，仅将已知不兼容声明中的 You are
-    改为 Your role is。独立于可选脱敏，用户消息、工具参数与结果不改写。
+    DSH 介绍使用官方 WorkBuddy 的 This conversation is powered by 句式。
+    其它声明只改已知不兼容句式，项目规则、能力及任务指令不整体替换。
+    独立于可选脱敏，用户消息、工具参数与结果不改写。
     返回替换次数；重复调用不会再次改写。
     """
     messages = obj.get("messages")
@@ -1165,13 +1190,13 @@ def normalize_harness_identity(obj: dict) -> int:
             continue
         content = message.get("content")
         if isinstance(content, str):
-            message["content"], changed = _normalize_harness_identity_text(content)
+            message["content"], changed = _normalize_harness_identity_text(content, obj.get('model'))
             count += changed
         elif isinstance(content, list):
             for part in content:
                 if (isinstance(part, dict) and part.get("type") in ("text", "input_text")
                         and isinstance(part.get("text"), str)):
-                    part["text"], changed = _normalize_harness_identity_text(part["text"])
+                    part["text"], changed = _normalize_harness_identity_text(part["text"], obj.get('model'))
                     count += changed
     return count
 
@@ -1225,7 +1250,7 @@ def normalize_harness_body(obj: dict) -> dict:
          compat.supportsDeveloperRole=false」时就会发 developer，
          于是 DeepSeek Harness 一开思考就整条被拒。
       2. 孤儿 tool_call 清理（安全网，防 11148）。
-      3. 身份声明句式归一（保留客户端名称，不依赖可选脱敏）。
+      3. 身份声明句式归一（DSH 使用官方介绍句式，不依赖可选脱敏）。
       4. 固定模板归一（全局去掉主分支说明中的已知不兼容括号注释）。
 
     返回 roles / orphans / identity / templates 改写统计，

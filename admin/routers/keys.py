@@ -257,6 +257,32 @@ def key_ips(
     from admin import request_metrics
     live = request_metrics.key_ip_snapshot([key_id]).get(key_id, {})
     active = live.get("ips", {})
+    # 每个 IP 的模型用量（调用记录窗口内）：供「来源 IP」弹窗直接展示。
+    # recent = 15 分钟内用过；live = 此刻在途 —— 两者合并成一份 badge 数据。
+    model_rows = (db.query(UsageLog.client_ip, UsageLog.model,
+                           func.count(UsageLog.id),
+                           func.coalesce(func.sum(UsageLog.total_tokens), 0),
+                           func.max(UsageLog.created_at))
+                  .filter(UsageLog.api_key_id == key_id, UsageLog.created_at >= start,
+                          UsageLog.model.isnot(None), UsageLog.model != "",
+                          UsageLog.client_ip.isnot(None), UsageLog.client_ip.notin_(_UNKNOWN_IPS))
+                  .group_by(UsageLog.client_ip, UsageLog.model).all())
+    recent_cut = datetime.utcnow() - timedelta(minutes=15)
+    per_ip_models = {}
+    for ip, model, count, tokens, last_seen in model_rows:
+        per_ip_models.setdefault(ip, []).append({
+            "model": model, "requests": int(count), "tokens": int(tokens),
+            "last_seen": last_seen, "recent": bool(last_seen and last_seen >= recent_cut)})
+    def _models_for(ip):
+        entries = {e["model"]: dict(e) for e in per_ip_models.get(ip, [])}
+        for model, count in sorted((active.get(ip, {}).get("models") or {}).items(),
+                                   key=lambda kv: -kv[1]):
+            entry = entries.setdefault(model, {"model": model, "requests": 0, "tokens": 0,
+                                               "last_seen": None, "recent": False})
+            entry["live"] = True
+            entry["live_requests"] = int(count)
+        return sorted(entries.values(), key=lambda e: (-(e.get("live_requests") or 0),
+                                                       -e["requests"]))[:6]
     addresses = {row.ip for row in rows} | set(active)
     blocked = {row.ip: row.id for row in db.query(BlockedIP).filter(
         BlockedIP.enabled == 1, BlockedIP.ip.in_(addresses)).all()} if addresses else {}
@@ -269,11 +295,16 @@ def key_ips(
         "active_ips": len(active), "active_requests": live.get("active_requests", 0),
         "active_scope": "当前服务进程",
         "devices": devices,
-        "active": [{"ip": ip, **item, "blocked": ip in blocked,
+        "active": [{"ip": ip, **item,
+                    "models": [{"model": m, "live_requests": c} for m, c
+                               in sorted((item.get("models") or {}).items(),
+                                         key=lambda kv: -kv[1])],
+                    "blocked": ip in blocked,
                     "blocked_id": blocked.get(ip)} for ip, item in sorted(active.items())],
         "items": [{"ip": row.ip, "requests": int(row.requests), "failed": int(row.failed or 0),
                    "credits": round(float(row.credits), 4), "tokens": int(row.tokens),
                    "last_seen": row.last_seen.isoformat() if row.last_seen else None,
+                   "models": _models_for(row.ip),
                    "active_requests": active.get(row.ip, {}).get("active_requests", 0),
                    "blocked": row.ip in blocked, "blocked_id": blocked.get(row.ip)} for row in rows],
     }

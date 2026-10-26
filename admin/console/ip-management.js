@@ -24,7 +24,7 @@ window.WBIP = (() => {
   }
   let devices = [], deviceBusy = false;
   function deviceHTML(items, scope) {
-    const names = {device_id:'设备 ID',fingerprint:'客户端指纹',mac:'MAC'};
+    const names = {device_id:'设备 ID',fingerprint:'客户端指纹',mac:'MAC',browser:'浏览器指纹'};
     return items.length ? `<div class="ip-device-list">${items.map((row,i)=>`<article class="card ip-device-item"><div class="flex flex-wrap justify-between items-start gap-2"><div class="min-w-0"><div class="text-xs text-slate-400">${e(names[row.kind]||row.kind)}</div><code>${e(row.value)}</code></div>${statusTag(row.blocked)}</div><div class="ip-device-meta"><span class="badge bg-amber-100 text-amber-700">客户端上报 · 未验证</span>${row.ips.map(ip=>`<span class="badge bg-slate-100 text-slate-500">${e(ip)}</span>`).join('')}</div><div class="mt-3"><button class="console-btn quiet" onclick="${scope}.toggleDevice(${i})">${row.blocked?'解除设备封禁':'封禁设备标识'}</button></div></article>`).join('')}</div>` : '<div class="card p-4 text-center text-slate-400">暂无客户端上报的设备标识</div>';
   }
   async function changeDevice(row) {

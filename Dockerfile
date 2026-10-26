@@ -1,11 +1,20 @@
-FROM python:3.12-slim
+# 国内网络构建示例（基础镜像与 pip 都可换源）：
+#   docker pull docker.m.daocloud.io/library/python:3.12-slim
+#   docker tag docker.m.daocloud.io/library/python:3.12-slim python:3.12-slim
+#   docker compose --env-file .env.docker build \
+#     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple admin
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
 
 WORKDIR /app
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_EXTRA_ARGS=""
 
 # 依赖锁定：requirements.lock 钉死直接+传递依赖，避免每次重建漂到不同版本。
 # requirements.txt 只保留可读的直接依赖；两者必须一起 COPY，缺任何一个 pip 都会报错。
 COPY requirements.txt requirements.lock ./
-RUN pip install --no-cache-dir -c requirements.lock -r requirements.txt && pip check
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} ${PIP_EXTRA_ARGS} -c requirements.lock -r requirements.txt && pip check
 
 COPY converter.py responses_adapter.py responses_projection.py anthropic_adapter.py desensitize.py upstream_compat.py repository_instructions.py model_metadata.py wb_install.py wb_asar.py wb_envcheck.py turing_helper.js ./
 COPY admin ./admin
