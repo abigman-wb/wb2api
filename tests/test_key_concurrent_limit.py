@@ -409,26 +409,30 @@ class ConversationIsolationTests(unittest.TestCase):
             body["metadata"] = {"user_id": user_id}
         return _session_headers(body, "")
 
-    def test_identical_turns_in_different_explicit_conversations_have_distinct_roots(self):
+    # 1.16.0 起上游有意不再「推导」任何 tracing 头（见 _session_headers 的 docstring）：
+    # 只保留客户端显式给出的 X-Conversation-ID，不再合成 X-Root-Request-ID / X-Trace-ID /
+    # X-Conversation-Request-ID / X-Request-ID。以下四条断言把新契约钉住。
+    def test_identical_turns_in_different_explicit_conversations_stay_distinct(self):
         a, b = self.headers("chat-a"), self.headers("chat-b")
-        self.assertNotEqual(a["X-Root-Request-ID"], b["X-Root-Request-ID"])
         self.assertEqual(a["X-Conversation-ID"], "chat-a")
         self.assertEqual(b["X-Conversation-ID"], "chat-b")
 
-    def test_fallback_conversations_include_their_first_user_message(self):
+    def test_requests_without_conversation_id_get_no_session_headers(self):
         a, b = self.headers(first="task-a"), self.headers(first="task-b")
-        self.assertNotEqual(a["X-Root-Request-ID"], b["X-Root-Request-ID"])
+        self.assertNotIn("X-Conversation-ID", a)
+        self.assertNotIn("X-Conversation-ID", b)
+        self.assertEqual(a, b)
 
     def test_same_conversation_turn_remains_stable_across_attempts(self):
         a, b = self.headers("chat-a"), self.headers("chat-a")
-        self.assertEqual(a["X-Root-Request-ID"], b["X-Root-Request-ID"])
-        self.assertEqual(a["X-Conversation-Request-ID"], b["X-Conversation-Request-ID"])
-        self.assertNotEqual(a["X-Request-ID"], b["X-Request-ID"])
+        self.assertEqual(a["X-Conversation-ID"], b["X-Conversation-ID"])
 
-    def test_user_id_without_conversation_id_does_not_merge_independent_requests(self):
-        a, b = self.headers(user_id="one-user"), self.headers(user_id="one-user")
-        self.assertNotEqual(a["X-Trace-ID"], b["X-Trace-ID"])
-        self.assertNotIn("X-Root-Request-ID", a)
+    def test_no_tracing_headers_are_synthesized(self):
+        for body_kwargs in ({"conversation": "chat-a"}, {"user_id": "one-user"}, {}):
+            headers = self.headers(**body_kwargs)
+            for synthesized in ("X-Root-Request-ID", "X-Trace-ID",
+                                "X-Conversation-Request-ID", "X-Request-ID"):
+                self.assertNotIn(synthesized, headers)
 
 
 if __name__ == "__main__":

@@ -215,7 +215,7 @@ def mark_upstream_error(kind, status=None):
     allowed = {'hard_credit', 'soft_rate', 'model_rate', 'model_block', 'account_fault',
                'session_dead', 'waf', 'server', 'not_found', 'transport', 'client',
                'no_account', 'success', 'unknown', 'model_queue', 'retry_exhausted',
-               'upstream_internal', 'model_behavior'}
+               'upstream_internal', 'model_behavior', 'upstream_auth_anomaly'}
     if record is not None:
         with _lock:
             record['upstream_error'] = kind if kind in allowed else 'unknown'
@@ -281,7 +281,7 @@ def activity_snapshot(paths, key_ids=None, limit=100):
 
 
 def key_ip_snapshot(key_ids=None):
-    """Copy only per-key/IP counts and start times from this process's live registry."""
+    """Copy only per-key/IP counts, start times and in-flight models."""
     wanted = set(key_ids) if key_ids is not None else None
     grouped = {}
     with _lock:
@@ -297,11 +297,14 @@ def key_ip_snapshot(key_ids=None):
             })
             item = summary['ips'].setdefault(ip, {
                 'active_requests': 0, 'first_started_at': None,
-                'last_started_at': None,
+                'last_started_at': None, 'models': {},
             })
             started = record.get('started_at')
             item['active_requests'] += 1
             summary['active_requests'] += 1
+            model = record.get('requested_model') or record.get('last_model')
+            if model:
+                item['models'][model] = item['models'].get(model, 0) + 1
             if started and (item['first_started_at'] is None or started < item['first_started_at']):
                 item['first_started_at'] = started
             if started and (item['last_started_at'] is None or started > item['last_started_at']):

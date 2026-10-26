@@ -531,8 +531,11 @@ def weighted_pick(cands: list[dict], *, rand: random.Random | None = None,
         # 等权重洗牌：仅在存在并列时做，避免字典序截断造成饿死。
         eq = any(abs(w - weighted[0][1]) < WEIGHT_EPSILON for _, w in weighted[1:])
         if eq:
-            shuf = random.Random(time.monotonic_ns())
-            shuf.shuffle(weighted)
+            # Use the same injected RNG as the final weighted draw.  Seeding a
+            # fresh RNG from the clock for every call can repeat seeds on fast
+            # loops and leaves one of the tied accounts outside the shortlist.
+            # The module RNG is used for normal production calls.
+            (rand or random).shuffle(weighted)
             weighted.sort(key=lambda p: p[1], reverse=True)
         weighted = weighted[:TOP_N]
 

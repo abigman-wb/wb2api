@@ -114,17 +114,22 @@ window.WBReview = (() => {
         (data.error ? '<p class="maintenance-error">' + esc(data.error) + '</p>' : '') + '</section>' +
         '<section class="card maintenance-step"><div class="maintenance-step-head"><span class="maintenance-step-number">01</span><div><h2>备份数据</h2><p>升级前先保存一份数据库备份，便于恢复账号与配置。</p></div><span class="maintenance-db">' +
         esc(String(data.database || (data.backup_supported ? 'sqlite' : '数据库')).toUpperCase()) + '</span></div>' +
-        (data.backup_supported ? '<button class="console-btn primary" onclick="WBReview.backup()"><i class="fa-solid fa-download" aria-hidden="true"></i>下载 SQLite 备份</button>' :
+        (data.backup_supported ? '<div class="maintenance-backup-actions"><button class="console-btn primary" onclick="WBReview.backup()"><i class="fa-solid fa-download" aria-hidden="true"></i>下载 SQLite 备份</button>' +
+          '<button class="console-btn" onclick="WBReview.pickRestore()"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>恢复备份</button>' +
+          '<input type="file" id="restoreFileInput" accept=".db,application/octet-stream" hidden onchange="WBReview.confirmRestore(this)" /></div>' :
           '<p class="maintenance-backup-help">当前数据库请使用管理工具完成备份' + (data.mysql_backup_command ? '，也可以在终端使用以下命令。' : '。') + '</p>') +
         (data.mysql_backup_command ? commandBlock('maintenance-command-backup', data.mysql_backup_command) : '') +
         '<p class="maintenance-private-note"><i class="fa-solid fa-lock" aria-hidden="true"></i>备份包含账号凭据和 API Key，请私密保存。</p></section>' +
         '<section class="card maintenance-step"><div class="maintenance-step-head"><span class="maintenance-step-number">02</span><div><h2>升级与重启</h2><p>选择当前的部署方式，在项目目录执行对应命令。</p></div></div>' +
-        (data.commands ? '<div class="maintenance-tabs" role="group" aria-label="部署方式">' +
+        (data.commands ? ((data.commands_cn ? '<label class="maintenance-cn-toggle"><input type="checkbox" id="cnMirrorToggle" onchange="WBReview.toggleCnSource()" /><span>国内网络环境（pip 走清华镜像，附基础镜像加速提示）</span></label>' : '') +
+          '<div class="maintenance-tabs" role="group" aria-label="部署方式">' +
           ['docker','linux'].filter(name => data.commands[name]).map(name => '<button type="button" data-install-method="' + name +
             '" aria-pressed="false" onclick="WBReview.selectInstall(\'' + name + '\')">' + (name === 'docker' ? 'Docker Compose' : 'Linux 源码') +
             '</button>').join('') + '</div>' +
           ['docker','linux'].filter(name => data.commands[name]).map(name => '<div data-install-panel="' + name + '">' +
-            commandBlock('maintenance-command-' + name, data.commands[name]) + '</div>').join('') :
+            '<div data-cn-panel="default">' + commandBlock('maintenance-command-' + name, data.commands[name]) + '</div>' +
+            (data.commands_cn && data.commands_cn[name] ? '<div data-cn-panel="cn" hidden>' + commandBlock('maintenance-command-cn-' + name, data.commands_cn[name]) + '</div>' : '') +
+            '</div>').join('')) :
           '<p class="maintenance-backup-help">获取正式版本后显示对应的升级命令，请稍后重新检查。</p>') +
         '<p class="maintenance-deploy-note">先确认 <code>git status</code> 没有未处理的本地改动。NAS 可在容器管理器重新构建并重启，保留 <code>/data</code> 数据卷。</p></section>';
       selectInstall(data.commands?.[installMethod] ? installMethod : data.commands?.docker ? 'docker' : 'linux');
@@ -139,6 +144,60 @@ window.WBReview = (() => {
       document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url),60000);
     } catch (error) { toast(error.message,'err'); }
   }
+  function toggleCnSource() {
+    const on = !!(document.getElementById('cnMirrorToggle')?.checked);
+    document.querySelectorAll('[data-cn-panel]').forEach(panel => { panel.hidden = panel.dataset.cnPanel !== (on ? 'cn' : 'default'); });
+  }
+  function pickRestore() {
+    const input = document.getElementById('restoreFileInput');
+    if (!input) return toast('请先检查更新以加载备份面板', 'err');
+    input.value = '';
+    input.click();
+  }
+  function confirmRestore(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const size = file.size > 1048576 ? (file.size / 1048576).toFixed(1) + ' MB' : (file.size / 1024).toFixed(1) + ' KB';
+    openModal('<h3><i class="fa-solid fa-clock-rotate-left mr-1"></i>确认恢复备份？</h3>' +
+      '<p class="my-3">将用上传的备份<b>整体替换</b>当前数据库（账号、Key、日志、配置全部回到备份时刻）。</p>' +
+      '<p class="text-sm" style="color:var(--fg-muted)">文件：<code>' + esc(file.name) + '</code> · ' + esc(size) + '<br/>' +
+      '恢复前会自动在数据目录保存一份安全副本；完成后建议重启服务。</p>' +
+      '<div class="flex gap-2 justify-end mt-4"><button class="console-btn" onclick="closeModal()">取消</button>' +
+      '<button class="console-btn primary" id="restoreConfirmBtn" onclick="WBReview.doRestore()"><i class="fa-solid fa-clock-rotate-left"></i>开始恢复</button></div>', 'max-w-lg');
+    window.__restoreFile = file;
+  }
+  async function doRestore() {
+    const file = window.__restoreFile;
+    const btn = document.getElementById('restoreConfirmBtn');
+    if (!file) { closeModal(); return; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>恢复中…'; }
+    try {
+      const response = await api('/api/maintenance/restore', {method: 'POST', body: file, headers: {'Content-Type': 'application/octet-stream'}});
+      const result = await safeJson(response);
+      if (!result.ok) throw new Error(result.data.detail || 'HTTP ' + result.status);
+      closeModal();
+      const t = result.data.tables || {};
+      toast('恢复完成：账号 ' + (t.accounts ?? '?') + ' · Key ' + (t.api_keys ?? '?') + ' · 安全副本 ' + (result.data.safety_copy || '已保存') + '。建议重启服务。', 'ok');
+    } catch (error) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-clock-rotate-left"></i>开始恢复'; }
+      toast(error.message, 'err');
+    } finally { window.__restoreFile = null; }
+  }
+  async function doRestartService() {
+    const btn = document.getElementById('restartSvcBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>重启中…'; }
+    try {
+      const response = await api('/api/maintenance/restart', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm: true})});
+      const result = await safeJson(response);
+      if (!result.ok) throw new Error(result.data.detail || 'HTTP ' + result.status);
+      closeModal();
+      toast('已触发重启：新实例将在几秒内就绪，页面将自动重连', 'ok');
+      setTimeout(() => location.reload(), 8000);
+    } catch (error) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-power-off"></i>立即重启'; }
+      toast(error.message, 'err');
+    }
+  }
   function accountLimit(id) {
     const account = accById(id);
     openModal('<h3>账号并发上限 · ' + esc(account?.name || String(id)) + '</h3><p class="my-3">留空跟随全局；0 表示不限；正整数限制同时请求数。只影响后续请求，维护中的账号仍会暂停接入。</p><input id="accountInFlight" type="number" min="0" step="1" max="2147483647" value="' + (account?.max_in_flight ?? '') + '" placeholder="留空跟随全局" aria-label="账号并发上限" /><button class="console-btn" onclick="WBReview.saveLimit(' + id + ')">保存</button>', 'max-w-lg');
@@ -149,7 +208,7 @@ window.WBReview = (() => {
     if (value !== null && (!Number.isInteger(value) || value < 0 || value > 2147483647)) return toast('请输入非负整数或留空','err');
     try { await json('/api/accounts/' + id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_in_flight:value})}); closeModal(); loadAccounts(); } catch (error) { toast(error.message,'err'); }
   }
-  return {loadJournal, resetJournal, journalPage:delta => loadJournal(Math.max(1,page+delta)), loadUpdate, selectInstall, backup, accountLimit, saveLimit};
+  return {loadJournal, resetJournal, journalPage:delta => loadJournal(Math.max(1,page+delta)), loadUpdate, selectInstall, toggleCnSource, backup, pickRestore, confirmRestore, doRestore, doRestartService, accountLimit, saveLimit};
 })();
 document.addEventListener('DOMContentLoaded', () => {
   if (document.documentElement.dataset.activeTab === 'journal') WBReview.loadJournal(1);

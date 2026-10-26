@@ -228,13 +228,37 @@ async def _finish_thread(fn, *args):
 
 
 class GatewayAdmissionMiddleware:
-    def __init__(self, app, wait_timeout=0, max_waiters_per_key=8, max_waiters=128,
-                 request_timeout=120):
+    def __init__(self, app, wait_timeout=None, max_waiters_per_key=8, max_waiters=128,
+                 request_timeout=None, dynamic_settings=False):
         self.app = app
-        self.wait_timeout = max(0, float(wait_timeout))
+        self._wait_timeout_dynamic = bool(dynamic_settings)
+        self._wait_timeout_default = max(0, float(wait_timeout if wait_timeout is not None else 0))
         self.max_waiters_per_key = max_waiters_per_key
         self.max_waiters = max_waiters
-        self.request_timeout = max(0, float(request_timeout))
+        self._request_timeout_dynamic = bool(dynamic_settings)
+        self._request_timeout_default = max(0, float(request_timeout if request_timeout is not None else 160))
+
+    # 等待/总时限实时读 settings（后台「运行配置」可动态改，无需重启）；
+    # 读不到或非法时回落注册时的默认值。
+    @property
+    def wait_timeout(self) -> float:
+        if not self._wait_timeout_dynamic:
+            return self._wait_timeout_default
+        try:
+            return max(0.0, float(getattr(settings, "GATEWAY_WAIT_TIMEOUT",
+                                          self._wait_timeout_default)))
+        except (TypeError, ValueError):
+            return self._wait_timeout_default
+
+    @property
+    def request_timeout(self) -> float:
+        if not self._request_timeout_dynamic:
+            return self._request_timeout_default
+        try:
+            return max(0.0, float(getattr(settings, "GATEWAY_REQUEST_TIMEOUT",
+                                          self._request_timeout_default)))
+        except (TypeError, ValueError):
+            return self._request_timeout_default
 
     async def _acquire_once(self, key, rate, concurrent):
         pending = asyncio.create_task(asyncio.to_thread(allow, key, rate, concurrent))
