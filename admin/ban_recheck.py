@@ -80,6 +80,7 @@ def probe_model_capability(auth_json: str, uid: str, model: str) -> dict:
     调用方不应据此改变账号状态。
     """
     import httpx
+
     from admin import backend, upstream_errors
     from admin.routers.proxy import _classify_error, _extract_http_status
 
@@ -138,6 +139,7 @@ def probe_trusted_auth(auth_json: str) -> dict:
     succeeding proves that the bearer credential is still accepted.
     """
     import re
+
     from admin import backend
 
     sess = None

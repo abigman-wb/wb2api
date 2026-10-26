@@ -1,12 +1,9 @@
 """Authoritative, non-destructive account-pool health checks."""
 from __future__ import annotations
 
-import json
 import logging
 import time
 from datetime import datetime
-
-import httpx
 
 from admin import backend, maintenance
 from admin.config import settings
@@ -76,7 +73,9 @@ def _select_chat_model(db, rows) -> tuple[str, bool]:
 def _conversation_probe(sess, model: str) -> dict:
     """Send one minimal real upstream chat and require a normal completed stream."""
     from admin.routers.proxy import (
-        _looks_like_inband_error, _sse_has_content, _sse_has_error_event,
+        _looks_like_inband_error,
+        _sse_has_content,
+        _sse_has_error_event,
         _sse_is_truncated,
     )
 

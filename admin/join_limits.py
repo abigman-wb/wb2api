@@ -5,7 +5,6 @@ from starlette.responses import JSONResponse
 
 from admin.config import settings
 
-
 _JOIN_PATHS = {
     '/api/join/start',
     '/api/join/send',

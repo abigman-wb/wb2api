@@ -1,9 +1,9 @@
 """Begin/end a bounded upgrade window before stopping the application."""
 import argparse
 import os
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 import httpx
 

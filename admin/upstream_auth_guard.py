@@ -14,7 +14,6 @@ import threading
 import time
 from collections import defaultdict, deque
 
-
 _WINDOW_SECONDS = 120.0
 _SHARED_THRESHOLD = 3
 _lock = threading.Lock()

@@ -1,11 +1,11 @@
 """Independent, loopback-only waiting proxy for planned server upgrades."""
 import asyncio
-from contextlib import asynccontextmanager
 import json
 import os
-from pathlib import Path
 import tempfile
 import time
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import anyio
 import httpx
