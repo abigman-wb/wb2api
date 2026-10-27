@@ -1306,12 +1306,13 @@ _DSH_SYSTEM_BLOCKS = (
      "resolve from the workspace root; absolute ones refer to the host filesystem. "
      "A trailing slash means a directory, so list it when its contents matter. "
      "Everything else is a file: open it with the read tool instead of assuming its "
-     "contents, and never describe a file you have not opened. Paths containing "
-     "spaces are written as \"...\"."),
+     "contents, and do not claim to have inspected a file before reading it. "
+     "Paths containing spaces are written as \"...\"."),
     ("Non-zero exits are reported as `[exit code: N]`",
      "Failures appear as `[exit code: N]` markers; look into them instead of "
-     "pressing on. On Windows a forcibly stopped process ends as a bare exit code 1 "
-     "without a signal marker, so treat that as an interruption rather than a defect."),
+     "pressing on. On Windows a forcibly stopped process ends as a bare "
+     "`[exit code: 1]` without a signal marker, so treat that as an interruption "
+     "rather than a defect."),
     ("Use the read tool — not shell commands like cat",
      "For text files, open them with the read tool rather than shell utilities such "
      "as cat. Page through long files by passing offset and limit."),
@@ -1344,15 +1345,15 @@ _DSH_SYSTEM_BLOCKS = (
      "After a resume or fork an active goal is disarmed, so on any request to "
      "continue or resume rearm it with update_goal action resume. Complete a goal "
      "only once the objective is genuinely met; mark it blocked only when one "
-     "concrete condition has persisted across at least three consecutive goal "
+     "concrete condition has persisted across at least 3 consecutive goal "
      "rounds, and name that condition in blocked_reason -- difficulty, uncertainty "
-     "or leftover work is not blocked."),
+     "or useful remaining work is not blocked."),
     ("Use the workflow tool ONLY when the user explicitly",
      "Call the workflow tool only when the user explicitly asks for a workflow or "
-     "for large multi-agent orchestration: the script you write (its format is "
-     "documented in the tool description) fans work out across many subagents in "
-     "phases and returns structured results. For one or two delegations, plain "
-     "subagent calls are better."),
+     "for large multi-agent orchestration: you write a JavaScript script (the tool "
+     "description documents the exact format) that fans work out across many "
+     "subagents in phases and returns structured results. For one or two "
+     "delegations, plain subagent calls are better."),
     ("Start independent delegations with `subagent`",
      "Send `subagent` or `subagent_fork` in the same assistant message to launch "
      "independent delegations, then keep doing useful work while they run."),
