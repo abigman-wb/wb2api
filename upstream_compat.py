@@ -716,6 +716,16 @@ _PROMPT_TEMPLATE_REWRITES = (
     (" (you will usually use this for PRs)", ""),
     ("(you will usually use this for PRs)", ""),
     ("you will usually use this for PRs", ""),
+    # 2026-10-27 上游新增「相邻句」模板指纹：DSH 出厂 system prompt 里
+    #   "Tokens prefixed with @ are paths the user explicitly referenced."
+    #   "Relative paths resolve from the workspace root; ..."
+    # 两句**同一行相邻**即 400/11128。实测（deepseek-v4.1-flash，同账号同头）：
+    #   · 拆开单独发 → 200；同一行连着发 → 400
+    #   · 两句之间插换行 → 200（规则按行内相邻匹配，不是语义）
+    #   · 只改第一句的措辞 → 200
+    # 故只重写第一句拆掉指纹；语义等价，且不再触发整段拒绝。
+    ("Tokens prefixed with @ are paths the user explicitly referenced.",
+     "Paths that begin with @ were pointed at by the user."),
 )
 
 SANITIZE_FEATURES = (
