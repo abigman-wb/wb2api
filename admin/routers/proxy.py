@@ -157,6 +157,8 @@ def _normalize_harness_body(chat_body: dict) -> dict:
             _logger.info("[harness-compat] 身份声明句式归一 %d 处", stats["identity"])
         if stats.get("templates"):
             _logger.info("[harness-compat] 固定模板归一 %d 处", stats["templates"])
+        if stats.get("shield"):
+            _logger.info("[harness-compat] harness 提示词改写 %d 段（shield）", stats["shield"])
         if stats.get("orphans"):
             _logger.warning("[harness-compat] 清理孤儿 tool_call %d 处 | diag=%s",
                             stats["orphans"], _tool_diag(chat_body))
