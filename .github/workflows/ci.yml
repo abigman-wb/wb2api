@@ -60,14 +60,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: docker compose config
         run: docker compose -f docker-compose.dsh.yml config --quiet
-      - name: forbid image field in deploy compose
-        # 写了 image: 时 Portainer 部署前会 compose pull 本地镜像 → pull access denied
+      - name: 部署 compose 必须用 registry 镜像
+        # 部署已改为 pull GHCR 镜像；本地 build 会把 NAS 冻住（J3455），所以禁止 build:
         run: |
-          if grep -qE '^[[:space:]]+image:' docker-compose.dsh.yml; then
-            echo "::error file=docker-compose.dsh.yml::不要写 image 字段，只用 build:（否则 Portainer 会去 registry 拉不存在的镜像）"
+          if grep -qE '^[[:space:]]+build:' docker-compose.dsh.yml; then
+            echo "::error file=docker-compose.dsh.yml::不要写 build:，改用 ghcr.io 镜像（本地构建会冻机）"
             exit 1
           fi
-          echo "compose 未声明 image 字段，OK"
+          grep -qE '^[[:space:]]+image:[[:space:]]*ghcr\.io/' docker-compose.dsh.yml || {
+            echo "::error file=docker-compose.dsh.yml::缺少 ghcr.io 镜像地址"
+            exit 1
+          }
+          echo "compose 使用 registry 镜像，OK"
 
   test:
     name: test

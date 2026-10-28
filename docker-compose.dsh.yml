@@ -1,8 +1,9 @@
 # wb2api —— Portainer GitOps 部署（容器名/网络别名/数据目录全部沿用旧栈）
 services:
   workbuddy2api:
-    build: .
-    pull_policy: build          # 每次 up 都重建镜像；不要写 image:，否则 Portainer 会去 registry 拉它
+    image: ghcr.io/wdxa/wb2api:${WB2API_TAG:-latest}
+    pull_policy: always         # 每次 up 都从 GHCR 拉；构建在 GitHub Actions 里做，本地不 build（J3455 构建会冻机 30–40 分钟）
+
     container_name: workbuddy2api
     restart: unless-stopped
     init: true
