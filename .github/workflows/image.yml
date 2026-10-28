@@ -1,0 +1,68 @@
+name: image
+
+# 构建运行镜像并推到 GHCR；部署机（NAS / Portainer）只 pull，不再本地 build。
+#
+# 为什么挪走构建：部署机是 Celeron J3455，一次本地 docker build 会把整机拖到心跳
+# 断档 30–40 分钟（实测 2026-10-28 01:01→01:37 gap=2280s），撞上定时任务
+# （招投标采集一轮 4–6 分钟）会被墙钟超时打断。构建放到 runner 后本地零开销。
+#
+# 产物：ghcr.io/<owner>/wb2api:latest 与 :sha-<sha>。sha 标签用于回滚——
+# Portainer 里把 WB2API_TAG 改成 sha-<旧sha> 即可回退，不需要改仓库。
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/wb2api
+
+jobs:
+  build:
+    name: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build（先 load 到本地，验证通过再推）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: import smoke test
+        # 构建成功 ≠ 能启动：直接 import app 对象，捕获缺依赖/语法错误。
+        run: |
+          docker run --rm -e ADMIN_DATABASE_URL=sqlite:////tmp/ci.db \
+            ${{ env.IMAGE }}:sha-${{ github.sha }} \
+            python3 -c "import admin.server; print('import ok')"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: |
+          docker push --all-tags "${{ env.IMAGE }}"
+          docker image inspect "${{ env.IMAGE }}:latest" --format 'size={{.Size}}'
+          echo "=== digest ==="
+          docker image inspect "${{ env.IMAGE }}:latest" --format '{{range .RepoDigests}}{{println .}}{{end}}'
