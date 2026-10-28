@@ -13,7 +13,6 @@ on:
   push:
     branches:
       - master
-      - feat/ghcr-image      # 临时：仅用于在 fork 里验证构建链，合入前删除
   workflow_dispatch:
 
 permissions:
