@@ -9,7 +9,10 @@ name: sync-upstream
 # 上游发的东西坏掉时，本次同步中止，master 与线上都不受影响 —— 你只收到一封失败通知。
 on:
   schedule:
-    - cron: "0 3 * * *"
+    # 上游提交实测多在 09:54–15:54(CST)，少数在 22:51–23:30。两次窗口分别覆盖：
+    #   03:00 抓夜间提交；17:00 抓白天提交（滞后从 ~14h 压到 ≤2h）。
+    # 注意 GitHub 自带调度延迟 2–4h，实际起跑约 05–07 与 17–20。
+    - cron: "0 3,17 * * *"
       timezone: "Asia/Shanghai"
   workflow_dispatch:
 
