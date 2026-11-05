@@ -106,6 +106,24 @@ class WindowBudgetSignalTests(unittest.TestCase):
             self.assertEqual(_filter_window_budget(self.db, [a], self.now), [])
         self.assertTrue(self.db.info.get("budget_blocked"))
 
+    def test_preflight_blocks_before_stream_starts(self):
+        """入口预检：整池超预算时必须先判死，不能先开 SSE 再报错。"""
+        a = self._account("a")
+        b = self._account("b")
+        self._spend(a, 250)
+        self._spend(b, 260)
+        with patch.object(settings, "WINDOW_CREDIT_BUDGET", 210.0):
+            self.assertTrue(proxy._window_budget_blocked(self.db))
+        self.assertEqual(_no_account_status(), 429)
+
+    def test_preflight_passes_when_one_account_left(self):
+        a = self._account("a")
+        b = self._account("b")
+        self._spend(a, 250)
+        self._spend(b, 10)
+        with patch.object(settings, "WINDOW_CREDIT_BUDGET", 210.0):
+            self.assertFalse(proxy._window_budget_blocked(self.db))
+
     def test_wait_does_not_queue_when_budget_empties_pool(self):
         """预算拦截必须立刻返回（<2s），而不是等满 GATEWAY_QUEUE_TIMEOUT。
 

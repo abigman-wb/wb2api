@@ -1891,7 +1891,8 @@ def _retry_after_value() -> str:
     return str(max(3, int(block.get("retry_after", 3)))) if block else "3"
 
 
-def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> list[Account]:
+def _filter_window_budget(db: Session, rows: list[Account], now: datetime,
+                          quiet: bool = False) -> list[Account]:
     """剔除已达窗口积分预算的账号（预算 <= 0 时原样返回）。
 
     为什么不靠上游 429 再冷却：上游给的恢复时间是整段窗口（实测 4.5 小时），
@@ -1914,13 +1915,32 @@ def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> li
             "retry_after": int(wait),
             "reset_at": (now + timedelta(seconds=wait)).strftime("%m-%d %H:%M UTC"),
         })
-        _logger.warning("window budget: skip %d/%d account(s) over %.0f credits / %.1fh | %s",
-                        len(rows) - len(kept), len(rows), budget, hours, _window_block_text())
+        if not quiet:
+            _logger.warning("window budget: skip %d/%d account(s) over %.0f credits / %.1fh | %s",
+                            len(rows) - len(kept), len(rows), budget, hours, _window_block_text())
     if not kept:
         # 整池被本地预算清空：这是「主动停手」，不是「等一会儿就有号」，
         # 调用方不该继续排队等待（见 _select_account_with_wait）。
         db.info["budget_blocked"] = True
     return kept
+
+
+def _window_budget_blocked(db: Session) -> bool:
+    """整池是否已全部达到窗口预算（请求入口预检用）。
+
+    为什么必须预检：非流式/流式都在 `_stream()` 内部才发现无号，而流式响应
+    的头一经发出就是 200，客户端只能干等到超时——既拿不到错误，也不会触发
+    模型 fallback。入口处先判一次，才能干净地回 429。
+    """
+    budget, _hours, _src = credit_budget.effective(db)
+    if budget <= 0:
+        return False
+    rows = db.query(Account).filter(Account.status == "active").all()
+    if not rows:
+        return False
+    db.info.pop("budget_blocked", None)
+    _filter_window_budget(db, rows, datetime.utcnow(), quiet=True)
+    return bool(db.info.pop("budget_blocked", False))
 
 
 def _no_account_kind() -> str:
@@ -2628,6 +2648,19 @@ async def chat_completions(
     else:
         order = [resolved_model]  # 具体模型：不静默切换，失败即报错
 
+    # 预算闸门预检：必须在写出任何响应体（尤其是 SSE 200）之前拒绝。
+    # 否则客户端只能等到超时——既看不到错误，也不会触发模型 fallback，
+    # 表现就是「对话半天没反应、不报错、不降级」。
+    if await _blocking_call(_window_budget_blocked, db):
+        msg = _exhaustion_message("window_budget", "", 0, len(order))
+        _logger.warning("[gateway] window budget preflight reject | key=%s model=%s | %s",
+                        key.name, model, msg)
+        return JSONResponse(status_code=429,
+                            headers={"Retry-After": _retry_after_value()},
+                            content={"error": {"message": msg, "type": "rate_limit_error",
+                                               "code": "pool_window_budget_exhausted",
+                                               "gateway_kind": "window_budget"}})
+
     body = dict(payload)
     body["stream"] = True
     # 客户端是否要流式。OpenAI SDK 默认 stream=false，所以**不能**假定为 True。
@@ -3117,6 +3150,18 @@ async def responses_proxy(
                              error_kind=kind, use_case='gateway-admission')
         return JSONResponse(status_code=e.status_code, content=e.detail)
 
+    # 预算闸门预检：在写出响应头（含 SSE 200）之前拒绝，客户端才不会干等到
+    # 超时；429 + Retry-After 才能让它立刻 fallback 到下一档模型。
+    if await _blocking_call(_window_budget_blocked, db):
+        _msg = _exhaustion_message("window_budget", "", 0, 0)
+        _logger.warning("[gateway] window budget preflight reject | key=%s | %s", key.name, _msg)
+        return JSONResponse(status_code=429,
+                            headers={"Retry-After": _retry_after_value()},
+                            content={"error": {"message": _msg, "type": "rate_limit_error",
+                                               "code": "pool_window_budget_exhausted",
+                                               "gateway_kind": "window_budget"}})
+
+
     request.scope['_gateway_key_id'] = key.id
     try:
         payload = await _request_json(request)
@@ -3583,6 +3628,18 @@ async def anthropic_messages(
         await _blocking_call(_record_usage, key.id, 0, '', 0.0, None,
                              error_kind=kind, use_case='gateway-admission')
         return JSONResponse(status_code=e.status_code, content=e.detail)
+
+    # 预算闸门预检：在写出响应头（含 SSE 200）之前拒绝，客户端才不会干等到
+    # 超时；429 + Retry-After 才能让它立刻 fallback 到下一档模型。
+    if await _blocking_call(_window_budget_blocked, db):
+        _msg = _exhaustion_message("window_budget", "", 0, 0)
+        _logger.warning("[gateway] window budget preflight reject | key=%s | %s", key.name, _msg)
+        return JSONResponse(status_code=429,
+                            headers={"Retry-After": _retry_after_value()},
+                            content={"error": {"message": _msg, "type": "rate_limit_error",
+                                               "code": "pool_window_budget_exhausted",
+                                               "gateway_kind": "window_budget"}})
+
 
     request.scope['_gateway_key_id'] = key.id
     try:
