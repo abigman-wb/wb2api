@@ -92,6 +92,38 @@ def effective(db) -> tuple[float, float, str]:
     return 0.0, hours, "off"
 
 
+def reset_seconds(db, ids: list[int], now: datetime, hours: float,
+                  budget: float) -> float:
+    """最近一个账号「回落到预算以内」还要多少秒（用于 Retry-After）。
+
+    局部闸门和上游 429 不同：恢复时间**是我们自己算得出来的**。不告诉客户端
+    准确时间，它就只能按 3 秒的默认退避无限重试 —— 线上表现为「请求一直失败
+    但查不出原因」，因为每一次都只是同一个本地闸门在拒。这里从最老的用量记录
+    起累加，找到积分释放到预算以下的那一刻。
+    """
+    from admin.models import UsageLog
+
+    if not ids or budget <= 0:
+        return hours * 3600
+    since = now - timedelta(hours=hours)
+    best = hours * 3600
+    for aid in ids:
+        rows = (db.query(UsageLog.created_at, UsageLog.credits)
+                .filter(UsageLog.account_id == aid, UsageLog.created_at >= since)
+                .order_by(UsageLog.created_at).all())
+        if not rows:
+            continue
+        need = sum(float(c or 0) for _t, c in rows) - budget
+        freed = 0.0
+        for created_at, credits in rows:
+            freed += float(credits or 0)
+            if freed > need:
+                left = (created_at + timedelta(hours=hours) - now).total_seconds()
+                best = min(best, max(1.0, left))
+                break
+    return best
+
+
 def spend(db, ids: list[int], now: datetime, hours: float) -> dict[int, float]:
     """最近 `hours` 小时内每个账号已消耗的积分（无记录 = 0）。
 
