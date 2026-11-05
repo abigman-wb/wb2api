@@ -300,6 +300,17 @@ class CredentialManager:
         # 提前 60s 判定过期
         return time.time() * 1000 >= (expires_at - 60_000)
 
+    #: 刷新响应里若缺这些字段，就从旧凭证继承。
+    #:
+    #: 上游目前会把整份 auth 都回传，所以这条合并逻辑眼下是空转；它存在是为了
+    #: **上游哪天少回一个字段时不要静默丢数据**。原实现只补了 `refreshToken`
+    #: 和 `domain`，其余字段一旦缺失，凭证就变成「能过自检、但下游按字段读的
+    #: 地方拿到空值」的半残状态，而且没有任何报错 —— 这类静默降级在号池里最难查。
+    _INHERIT_FIELDS = (
+        'refreshToken', 'sessionState', 'tokenType', 'domain', 'scope',
+        'enterpriseId', 'expiresIn', 'refreshExpiresIn',
+    )
+
     def _refresh(self):
         """调后端刷新 token，写回 auth 文件与缓存。"""
         s = self._session()
@@ -320,16 +331,16 @@ class CredentialManager:
         if not isinstance(payload, dict):
             raise CredentialError('刷新令牌返回了无效凭证，已保留原凭证，请稍后重试或授权登录')
         new_auth = dict(payload)
-        # Upstream may retain the refresh token instead of rotating it. Never
-        # replace a usable stored credential with a partial successful payload.
-        if 'refreshToken' not in new_auth:
-            new_auth['refreshToken'] = auth['refreshToken']
+        # Upstream rotates the refresh token on every call, but a lenient
+        # rotation means the previous value keeps working until its own
+        # deadline. Still never let an empty/absent field erase a usable one.
+        for name in self._INHERIT_FIELDS:
+            if not new_auth.get(name) and auth.get(name):
+                new_auth[name] = auth[name]
         try:
             self._validate_auth({'auth': new_auth})
         except CredentialError:
             raise CredentialError('刷新令牌返回了不完整凭证，已保留原凭证，请稍后重试或授权登录') from None
-        # 继承部分字段
-        new_auth["domain"] = new_auth.get("domain") or auth.get("domain")
         new_auth["lastRefreshTime"] = int(time.time() * 1000)
         # 计算 expiresAt（若后端没直接给）
         if not new_auth.get("expiresAt") and new_auth.get("expiresIn"):

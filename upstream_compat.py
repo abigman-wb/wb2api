@@ -750,7 +750,21 @@ SANITIZE_REWRITES = _PROMPT_TEMPLATE_REWRITES + (
     ("11128", "11-128"),
 )
 
-_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header:[^;\n]*;?\s*")
+# 计费指纹来自 Claude Code：它把渠道元数据当**一整行纯文本**塞进 system 的
+# text block，例如
+#   "x-anthropic-billing-header: cc_version=2.1.310.8ea; cc_entrypoint=sdk-cli;"
+# 它不是协议字段（真正的 HTTP 头在 backend 的 _headers_for_attempt），上游只拿它
+# 做「是否官方客户端」的渠道识别。零宽对它无效 —— 上游会先归一化零宽再比对。
+#
+# 旧实现 `:[^;\n]*;?\s*` 吃到第一个分号就停，剩下的 `cc_entrypoint=...` 依赖
+# 下一轮 _KV_RE 补删（顺序依赖），实测整段只剩一个孤立的 ";"。
+#
+# 整行正则必须**只匹配「整行都是指纹」**：若同一行后面还有自然语言，交给
+# _HDR_INLINE_RE 只删到分号，避免把用户正文一起吞掉。
+_HDR_LINE_RE = re.compile(
+    r"(?im)^[ \t]*x-anthropic-billing-header[ \t]*:[ \t]*"
+    r"(?:[A-Za-z0-9_.\-]+=[^\s;\n]*;?[ \t]*)+[ \t]*(?:\r?\n|$)")
+_HDR_INLINE_RE = re.compile(r"(?i)x-anthropic-billing-header[ \t]*:[^;\n]*;?")
 _BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header")
 # cc_* kv：值到 `;`、空白或行尾为止。**不能**用 [^;\n]* —— 没有 `;` 时会把
 # 整行剩余内容一起吞掉（实测 "cmd cc_entrypoint=cli cc_version=1.2 tail"
@@ -780,8 +794,10 @@ def _sanitize_non_repository_text(text: str) -> str:
     for src, dst in SANITIZE_REWRITES:
         if src in text:
             text = text.replace(src, dst)
-    if _HDR_RE.search(text):
-        text = _HDR_RE.sub("", text)
+    if _HDR_LINE_RE.search(text):
+        text = _HDR_LINE_RE.sub("", text)
+    if _HDR_INLINE_RE.search(text):
+        text = _HDR_INLINE_RE.sub("", text)
     if "cc_" in text:
         prev = None
         while prev != text:  # 多个尾随 kv，循环到不动点
@@ -792,13 +808,24 @@ def _sanitize_non_repository_text(text: str) -> str:
 
 
 def _sanitize_content(content):
-    """content 可能是 string 或多模态数组（只动 text part）。"""
+    """content 可能是 string 或多模态数组（只动 text part）。
+
+    整块只有计费指纹时会被删空；部分上游对 `{"type":"text","text":""}`
+    直接 400，所以这里把空块摘掉而不是留空字符串。
+    """
     if isinstance(content, str):
         return sanitize_text(content)
     if isinstance(content, list):
+        kept = []
         for part in content:
             if isinstance(part, dict) and isinstance(part.get("text"), str):
-                part["text"] = sanitize_text(part["text"])
+                before = part["text"]
+                part["text"] = sanitize_text(before)
+                if before.strip() and not part["text"].strip():
+                    continue
+            kept.append(part)
+        if len(kept) != len(content):
+            return kept or ""
         return content
     return content
 
@@ -1246,6 +1273,64 @@ def normalize_prompt_templates(obj: dict) -> int:
     return count
 
 
+def strip_harness_billing_header(obj: dict) -> int:
+    """删除 system/developer 里的计费指纹行，返回命中的消息数。
+
+    与「敏感词脱敏」是两件事，**不受脱敏开关控制**：删的不是内容措辞，
+    而是一段与对话无关的客户端渠道指纹。两种残留一并处理：
+      · 文本块被删空 → 从 content 数组摘掉，不留空 text block；
+      · 整条消息只剩指纹 → 连消息一起删（空 content 的 system 消息
+        部分上游直接 400）。
+
+    为什么要单独成一步：`sanitize_messages()` 只在 `sanitize=True` 的链路上跑，
+    而 `/v1/chat/completions` 走的是本函数所在的 `normalize_harness_body()`，
+    从不打开那个开关 —— 于是带 `x-anthropic-billing-header` 的辅助请求
+    （Claude Code 的 security monitor / sentinel）在这一侧一直是裸发，
+    上游按未授权渠道 400/11128 拒绝，客户端只看到"400 无内容"并反复重试。
+    """
+    messages = obj.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    removed = 0
+    kept_messages = []
+    for message in messages:
+        if (not isinstance(message, dict)
+                or message.get("role") not in ("system", "developer")):
+            kept_messages.append(message)
+            continue
+        content = message.get("content")
+        touched = False
+        if isinstance(content, str):
+            if _HDR_LINE_RE.search(content) or _HDR_INLINE_RE.search(content):
+                cleaned = _HDR_INLINE_RE.sub("", _HDR_LINE_RE.sub("", content))
+                message = dict(message, content=cleaned.strip())
+                touched = True
+        elif isinstance(content, list):
+            parts = []
+            for part in content:
+                if (isinstance(part, dict) and part.get("type") in ("text", "input_text")
+                        and isinstance(part.get("text"), str)
+                        and (_HDR_LINE_RE.search(part["text"])
+                             or _HDR_INLINE_RE.search(part["text"]))):
+                    touched = True
+                    text = _HDR_INLINE_RE.sub("", _HDR_LINE_RE.sub("", part["text"]))
+                    if text.strip():
+                        parts.append(dict(part, text=text))
+                    continue
+                parts.append(part)
+            if touched:
+                message = dict(message, content=parts)
+        if touched:
+            removed += 1
+            payload = message.get("content")
+            if not payload or (isinstance(payload, str) and not payload.strip()):
+                continue
+        kept_messages.append(message)
+    if removed:
+        obj["messages"] = kept_messages
+    return removed
+
+
 def normalize_harness_body(obj: dict) -> dict:
     """所有客户端共用的最小上游兼容处理，按请求内容而非客户端名称判断。
 
@@ -1264,9 +1349,11 @@ def normalize_harness_body(obj: dict) -> dict:
       3. 身份声明句式归一（DSH 使用官方介绍句式，不依赖可选脱敏）。
       4. 固定模板归一（全局去掉主分支说明中的已知不兼容括号注释）。
 
-    返回 roles / orphans / identity / templates 改写统计，
+    返回 roles / orphans / identity / templates / billing 改写统计，
     obj 就地改写，调用方原样发送即可。
     """
+    # 指纹必须在 shield / 脱敏之前删：先行插入的零宽会让整行匹配失效。
+    billing = strip_harness_billing_header(obj)
     shielded = shield_harness_prompt(obj)
     return {
         "roles": normalize_roles(obj),
@@ -1274,6 +1361,7 @@ def normalize_harness_body(obj: dict) -> dict:
         "identity": normalize_harness_identity(obj),
         "templates": normalize_prompt_templates(obj),
         "shield": shielded,
+        "billing": billing,
     }
 
 
@@ -1488,6 +1576,7 @@ def prepare_upstream_body(obj: dict, *, sanitize: bool = False,
         obj["stream_options"] = {"include_usage": True}
 
     normalize_roles(obj)
+    strip_harness_billing_header(obj)
     shield_harness_prompt(obj)
     normalize_harness_identity(obj)
     normalize_prompt_templates(obj)
