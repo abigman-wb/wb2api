@@ -17,6 +17,8 @@ from admin.db import SessionLocal, init_db
 from admin.models import Account, ApiKey, UsageLog
 from admin.routers import proxy
 from admin.routers.proxy import (
+    _no_account_code,
+    _no_account_type,
     _filter_window_budget,
     _no_account_kind,
     _no_account_reason,
@@ -64,6 +66,8 @@ class WindowBudgetSignalTests(unittest.TestCase):
             self.assertEqual(_filter_window_budget(self.db, [a], self.now), [])
             self.assertEqual(_no_account_kind(), "window_budget")
             self.assertEqual(_no_account_status(), 429)
+            self.assertEqual(_no_account_code(), "pool_window_budget_exhausted")
+            self.assertEqual(_no_account_type(), "rate_limit_error")
             self.assertGreater(int(_retry_after_value()), 3)
             reason = _no_account_reason(self.db)
         self.assertIn("预算已用满", reason)

@@ -1920,6 +1920,14 @@ def _no_account_kind() -> str:
     return "window_budget" if _window_block() else "no_account"
 
 
+def _no_account_type() -> str:
+    return "rate_limit_error" if _window_block() else "server_error"
+
+
+def _no_account_code() -> str:
+    return "pool_window_budget_exhausted" if _window_block() else "service_unavailable"
+
+
 def _no_account_status() -> int:
     """本地预算拦截回 429（限流），其余维持 503（服务不可用）。
 
@@ -3043,7 +3051,7 @@ async def chat_completions(
             status_code=_no_account_status(),
             headers={"Retry-After": _retry_after_value()},
             content={"error": {"message": _exhaustion_message(_no_account_kind(), "", 0, len(order)),
-                               "type": "server_error", "code": "service_unavailable"}})
+                               "type": _no_account_type(), "code": _no_account_code()}})
     try:
         payload_out = json.loads(agg_out)
     except Exception:
@@ -3287,7 +3295,7 @@ async def responses_proxy(
             return JSONResponse(
                 status_code=_no_account_status(),
                 headers={"Retry-After": _retry_after_value()},
-                content={"error": {"message": _exhaustion_message(last_err_kind, last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
+                content={"error": {"message": _exhaustion_message(last_err_kind or _no_account_kind(), last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
                                    "type": "server_error", "code": "service_unavailable",
                                    **_failure_evidence(last_err_kind, last_err_msg, last_err_status)}})
         except GatewayRejected as exc:
@@ -3765,7 +3773,7 @@ async def anthropic_messages(
             return JSONResponse(
                 status_code=_no_account_status(),
                 headers={"Retry-After": _retry_after_value()},
-                content={"type": "error", "error": {"message": _exhaustion_message(last_err_kind, last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
+                content={"type": "error", "error": {"message": _exhaustion_message(last_err_kind or _no_account_kind(), last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
                                    "type": "overloaded_error",
                                    **_failure_evidence(last_err_kind, last_err_msg, last_err_status)}})
         except GatewayRejected as exc:
