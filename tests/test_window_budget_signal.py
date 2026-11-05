@@ -8,6 +8,8 @@
   3. Retry-After 是真实恢复秒数，不是 3。
 """
 
+import asyncio
+import time
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -91,9 +93,33 @@ class WindowBudgetSignalTests(unittest.TestCase):
         self._spend(a, 10)
         with patch.object(settings, "WINDOW_CREDIT_BUDGET", 210.0):
             self.assertEqual([x.name for x in _filter_window_budget(self.db, [a], self.now)], ["a"])
+        self.assertFalse(self.db.info.get("budget_blocked"))
         self.assertEqual(_no_account_kind(), "no_account")
         self.assertEqual(_no_account_status(), 503)
         self.assertEqual(_retry_after_value(), "3")
+
+    def test_filter_flags_budget_block_for_callers(self):
+        """整池被预算清空时要留痕，否则等号逻辑会继续排队 90 秒。"""
+        a = self._account("a")
+        self._spend(a, 250)
+        with patch.object(settings, "WINDOW_CREDIT_BUDGET", 210.0):
+            self.assertEqual(_filter_window_budget(self.db, [a], self.now), [])
+        self.assertTrue(self.db.info.get("budget_blocked"))
+
+    def test_wait_does_not_queue_when_budget_empties_pool(self):
+        """预算拦截必须立刻返回（<2s），而不是等满 GATEWAY_QUEUE_TIMEOUT。
+
+        线上表现是「请求挂 60-90 秒后回 503」，客户端还以为是被限速重试。
+        """
+        a = self._account("a")
+        self._spend(a, 250)
+        with patch.object(settings, "WINDOW_CREDIT_BUDGET", 210.0):
+            started = time.monotonic()
+            got = asyncio.run(proxy._select_account_with_wait(
+                self.db, model="kimi-k3.1-pro", min_balance=1))
+            elapsed = time.monotonic() - started
+        self.assertIsNone(got)
+        self.assertLess(elapsed, 2.0)
 
 
 if __name__ == "__main__":

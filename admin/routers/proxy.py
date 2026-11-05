@@ -1722,6 +1722,10 @@ async def _select_account_with_wait(db, **kwargs):
             if kwargs.get('key_id') is not None:
                 check_key_current(kwargs['key_id'])
             account = _select_account(db, **kwargs)
+            if db.info.pop("budget_blocked", False):
+                # 本地预算已把候选账号全部剔除，再等也等不出号来；
+                # 立刻结束等待，让调用方拿到带 Retry-After 的明确拒绝。
+                return None, False
             if account is not None and POOL.acquire_account(account):
                 leased = account
                 return account, False
@@ -1912,8 +1916,10 @@ def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> li
         })
         _logger.warning("window budget: skip %d/%d account(s) over %.0f credits / %.1fh | %s",
                         len(rows) - len(kept), len(rows), budget, hours, _window_block_text())
-    elif not kept:
-        _WINDOW_BLOCK.clear()
+    if not kept:
+        # 整池被本地预算清空：这是「主动停手」，不是「等一会儿就有号」，
+        # 调用方不该继续排队等待（见 _select_account_with_wait）。
+        db.info["budget_blocked"] = True
     return kept
 
 
@@ -3063,6 +3069,13 @@ async def chat_completions(
         # 错误必须带上**正确的状态码**：把上游 400（参数错）报成 503（服务不可用）
         # 会让调用方去重试一个永远不会成功的请求，也会掩盖真实故障。
         err = payload_out["error"] or {}
+        if err.get("gateway_kind") == "window_budget":
+            # 本地预算拦截必须回 429 + 真实 Retry-After：回 503 会让客户端当成
+            # 服务故障每几秒重试，正是「会话无限重试还查不出原因」的成因。
+            payload_out["error"].update({"type": "rate_limit_error",
+                                         "code": "pool_window_budget_exhausted"})
+            return JSONResponse(status_code=429, content=payload_out,
+                                headers={"Retry-After": _retry_after_value()})
         code = err.get("http_status") if err.get("source") == "gateway" else err.get("code")
         status = code if isinstance(code, int) and 400 <= code < 600 else 503
         return JSONResponse(status_code=status, content=payload_out,
