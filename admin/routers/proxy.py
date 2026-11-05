@@ -869,6 +869,7 @@ _EXHAUSTION_HINTS = {
     "upstream_auth_anomaly": "上游认证接口异常，未判定为账号失效",
     "transport": "与上游的网络连接异常",
     "no_account": "号池里没有可用账号（余额或状态均不满足）",
+    "window_budget": "号池 5 小时预算已用满（本地闸门主动停手，不是账号故障）",
 }
 
 
@@ -878,6 +879,12 @@ def _exhaustion_message(kind: str, last_msg: str, tried_accounts: int,
     hint = _EXHAUSTION_HINTS.get(kind or "", "未知错误")
     tried = f"账号调用尝试 {tried_accounts} 次 / 候选模型 {tried_models} 个"
     base = f"本网关判断：{hint}；{tried}"
+    # 本地预算闸门拦下的请求：上游根本没被调用，套「上游 HTTP：未记录」只会
+    # 把人往网络/账号故障上带。这里直接把预算现场说清楚，并给出恢复时间。
+    if kind == "window_budget":
+        block_text = _window_block_text()
+        if block_text:
+            return f"{block_text}（判据：{tried}；本次未向上游发出请求）"
     if not last_msg and not upstream_status:
         return base + '；本次没有取得上游错误响应。'
     info = upstream_errors.error_info(last_msg, upstream_status)
@@ -1839,6 +1846,45 @@ def _window_credit_spend(db: Session, ids: list[int], now: datetime) -> dict[int
     return credit_budget.spend(db, ids, now, hours)
 
 
+#: 最近一次「预算闸门把整池清空」的现场，供错误文案与 Retry-After 使用。
+#: 进程级而不是请求级：闸门是池子的事实（同一预算、同一窗口），并发请求
+#: 拿到的是同一句话；选号一旦成功就清空，不会串到下一次真实故障上。
+_WINDOW_BLOCK: dict = {}
+_WINDOW_BLOCK_TTL = 120.0
+
+
+def _window_block() -> dict:
+    """120 秒内的预算拦截现场；过期或没有返回空 dict。"""
+    if not _WINDOW_BLOCK:
+        return {}
+    if time.time() - _WINDOW_BLOCK.get("at", 0) > _WINDOW_BLOCK_TTL:
+        return {}
+    return _WINDOW_BLOCK
+
+
+def _window_block_text() -> str:
+    """一句话说清「谁被拦、还差多少、什么时候恢复」。"""
+    block = _window_block()
+    if not block:
+        return ""
+    parts = []
+    for name, used in block.get("spend", {}).items():
+        parts.append(f"{name} {used:.0f}/{block['budget']:.0f}")
+    wait = int(block.get("retry_after", 0))
+    minutes = max(1, round(wait / 60))
+    return (f"号池 {block['hours']:g} 小时窗口预算已用满（{', '.join(parts)} 积分；"
+            f"预算 {block['budget']:g}/号）—— 这是本地主动限速，不是账号故障，"
+            f"换号或充值都无效，不需要人工处理；最早 {block.get('reset_at', '?')} "
+            f"恢复（约 {minutes} 分钟后）。要立刻继续，只能在后台"
+            f"「设置 → 号池预算」临时提高预算。")
+
+
+def _retry_after_value() -> str:
+    """预算拦截时回真实恢复秒数，否则维持原来的 3 秒。"""
+    block = _window_block()
+    return str(max(3, int(block.get("retry_after", 3)))) if block else "3"
+
+
 def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> list[Account]:
     """剔除已达窗口积分预算的账号（预算 <= 0 时原样返回）。
 
@@ -1851,9 +1897,44 @@ def _filter_window_budget(db: Session, rows: list[Account], now: datetime) -> li
     spend = credit_budget.spend(db, [a.id for a in rows], now, hours)
     kept = [a for a in rows if spend.get(a.id, 0.0) < budget]
     if len(kept) != len(rows):
-        _logger.info("window budget: skip %d account(s) over %.0f credits / %.1fh",
-                     len(rows) - len(kept), budget, hours)
+        dropped = [a for a in rows if spend.get(a.id, 0.0) >= budget]
+        wait = credit_budget.reset_seconds(db, [a.id for a in dropped], now, hours, budget)
+        _WINDOW_BLOCK.clear()
+        _WINDOW_BLOCK.update({
+            "at": time.time(),
+            "budget": budget,
+            "hours": hours,
+            "spend": {a.name or str(a.id): spend.get(a.id, 0.0) for a in dropped},
+            "retry_after": int(wait),
+            "reset_at": (now + timedelta(seconds=wait)).strftime("%m-%d %H:%M UTC"),
+        })
+        _logger.warning("window budget: skip %d/%d account(s) over %.0f credits / %.1fh | %s",
+                        len(rows) - len(kept), len(rows), budget, hours, _window_block_text())
+    elif not kept:
+        _WINDOW_BLOCK.clear()
     return kept
+
+
+def _no_account_kind() -> str:
+    """选号失败的错误分类：本地预算拦截要给客户端一个**可区分的**类型。"""
+    return "window_budget" if _window_block() else "no_account"
+
+
+def _no_account_type() -> str:
+    return "rate_limit_error" if _window_block() else "server_error"
+
+
+def _no_account_code() -> str:
+    return "pool_window_budget_exhausted" if _window_block() else "service_unavailable"
+
+
+def _no_account_status() -> int:
+    """本地预算拦截回 429（限流），其余维持 503（服务不可用）。
+
+    503 会让客户端（含 Hermes/DSH）按「服务错误」立刻重试；429 才会被当成
+    「现在别发、稍后再来」，配合真实的 Retry-After 才不会形成重试风暴。
+    """
+    return 429 if _window_block() else 503
 
 
 def _no_account_reason(db: Session, account_id=None, key_id=None) -> str:
@@ -1865,6 +1946,10 @@ def _no_account_reason(db: Session, account_id=None, key_id=None) -> str:
     却被这句话误导成额度问题。
     """
     now = datetime.utcnow()
+    # 本地预算闸门优先：它和「号不健康」是两回事，混在一起会引导人去换号/充值。
+    block_text = _window_block_text()
+    if block_text:
+        return block_text
     accs = scope_accounts(db.query(Account), account_id, key_id).all()
     if not accs:
         if account_id:
@@ -2923,7 +3008,7 @@ async def chat_completions(
                             continue
             # 全部账号/模型均失败
             latency_ms = int((time.perf_counter() - request_start) * 1000)
-            err_kind = last_err_kind or ("no_account" if not last_err_msg else "transport")
+            err_kind = last_err_kind or ("transport" if last_err_msg else _no_account_kind())
             seq = _log_chat_row(None, latency_ms, final_model, mode, "-", status_out, None, error_kind=err_kind)
             await _blocking_call(_record_usage, key.id, 0, final_model, 0.0, None,
                           reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="chat-completion", seq=seq, latency_ms=latency_ms,
@@ -2963,10 +3048,10 @@ async def chat_completions(
         agg_out = chunk
     if not agg_out:
         return JSONResponse(
-            status_code=503,
-            headers={"Retry-After": "3"},
-            content={"error": {"message": _exhaustion_message("no_account", "", 0, len(order)),
-                               "type": "server_error", "code": "service_unavailable"}})
+            status_code=_no_account_status(),
+            headers={"Retry-After": _retry_after_value()},
+            content={"error": {"message": _exhaustion_message(_no_account_kind(), "", 0, len(order)),
+                               "type": _no_account_type(), "code": _no_account_code()}})
     try:
         payload_out = json.loads(agg_out)
     except Exception:
@@ -3199,7 +3284,7 @@ async def responses_proxy(
                         await pool.rotate_backoff_async(min(rotate_idx, 1))
                         rotate_idx += 1
                         continue
-            err_kind = last_err_kind or "no_account"
+            err_kind = last_err_kind or _no_account_kind()
             seq = _log_chat_row(None, None, resolved, "resp", "-", 503, None, error_kind=err_kind)
             await _blocking_call(_record_usage, key.id, 0, resolved, 0.0, None,
                           reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="responses", seq=seq, error_kind=err_kind)
@@ -3208,9 +3293,9 @@ async def responses_proxy(
                     "message": f"上游 WAF 拦截了网关出口 IP，已暂停轮转，请 {POOL.waf.remaining()}s 后重试",
                     "type": "server_error", "code": "service_unavailable"}})
             return JSONResponse(
-                status_code=503,
-                headers={"Retry-After": "3"},
-                content={"error": {"message": _exhaustion_message(last_err_kind, last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
+                status_code=_no_account_status(),
+                headers={"Retry-After": _retry_after_value()},
+                content={"error": {"message": _exhaustion_message(last_err_kind or _no_account_kind(), last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
                                    "type": "server_error", "code": "service_unavailable",
                                    **_failure_evidence(last_err_kind, last_err_msg, last_err_status)}})
         except GatewayRejected as exc:
@@ -3419,7 +3504,7 @@ async def responses_proxy(
                             rotate_idx += 1
                             continue
             latency_ms = int((time.perf_counter() - request_start) * 1000)
-            err_kind = last_err_kind or "no_account"
+            err_kind = last_err_kind or _no_account_kind()
             seq = _log_chat_row(None, latency_ms, final_model, "resp", "-", 503, None, error_kind=err_kind)
             await _blocking_call(_record_usage, key.id, 0, final_model, 0.0, None,
                           reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="responses", seq=seq, latency_ms=latency_ms,
@@ -3676,7 +3761,7 @@ async def anthropic_messages(
                         await pool.rotate_backoff_async(min(rotate_idx, 1))
                         rotate_idx += 1
                         continue
-            err_kind = last_err_kind or "no_account"
+            err_kind = last_err_kind or _no_account_kind()
             seq = _log_chat_row(None, None, resolved, "anthropic", "-", 503, None, error_kind=err_kind)
             await _blocking_call(_record_usage, key.id, 0, resolved, 0.0, None,
                           reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
@@ -3686,9 +3771,9 @@ async def anthropic_messages(
                     "message": f"上游 WAF 拦截了网关出口 IP，已暂停轮转，请 {POOL.waf.remaining()}s 后重试",
                     "type": "overloaded_error"}})
             return JSONResponse(
-                status_code=503,
-                headers={"Retry-After": "3"},
-                content={"type": "error", "error": {"message": _exhaustion_message(last_err_kind, last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
+                status_code=_no_account_status(),
+                headers={"Retry-After": _retry_after_value()},
+                content={"type": "error", "error": {"message": _exhaustion_message(last_err_kind or _no_account_kind(), last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status),
                                    "type": "overloaded_error",
                                    **_failure_evidence(last_err_kind, last_err_msg, last_err_status)}})
         except GatewayRejected as exc:
@@ -3909,7 +3994,7 @@ async def anthropic_messages(
                             rotate_idx += 1
                             continue
             latency_ms = int((time.perf_counter() - request_start) * 1000)
-            err_kind = last_err_kind or "no_account"
+            err_kind = last_err_kind or _no_account_kind()
             seq = _log_chat_row(None, latency_ms, final_model, "anthropic", "-", 503, None, error_kind=err_kind)
             await _blocking_call(_record_usage, key.id, 0, final_model, 0.0, None,
                           reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
@@ -4032,7 +4117,7 @@ def models(
             return {'object': 'list', 'data': data, 'source': 'local'}
     acc = _select_account(db, account_id=aid, key_id=key.id, min_balance=0)
     if not acc:
-        return JSONResponse(status_code=503, headers={"Retry-After": "3"},
+        return JSONResponse(status_code=_no_account_status(), headers={"Retry-After": _retry_after_value()},
                             content={"error": {"message": f"无可用账号：{_no_account_reason(db, aid, key.id)}",
                                                "type": "server_error", "code": "service_unavailable"}})
     # 换号重试 + 错误处置，与对话端点同口径。
