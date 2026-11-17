@@ -527,6 +527,9 @@ class MobileLatencyTests(unittest.IsolatedAsyncioTestCase):
             "get_key_row": MagicMock(return_value=SimpleNamespace(id=1)),
             "pool_budget": MagicMock(return_value=SweepBudget(1, 1)),
             "check_quota": MagicMock(),
+            # H4 额度预占属于入场层：本测试只测时延，预占一并 mock 掉
+            "_estimate_request_credits": MagicMock(return_value=0.0),
+            "reserve_quota": MagicMock(return_value=True),
             "_key_group_models": MagicMock(return_value=None),
             "_pick_best_model": slow_selection,
             "SessionLocal": MagicMock(),

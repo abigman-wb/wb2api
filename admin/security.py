@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 import jwt
 from fastapi import Header, HTTPException
+from sqlalchemy import func, or_
 
 from admin.config import settings
 from admin.db import SessionLocal
@@ -91,6 +92,30 @@ def check_quota(key: ApiKey) -> None:
             status_code=402,
             detail={"error": {"message": "当前 API Key 的额度已用完，请调整此 Key 的限额或联系管理员", "type": "quota_exceeded", "code": "key_quota_exceeded", "source": "gateway"}},
         )
+
+
+_QUOTA_EXCEEDED_DETAIL = {"error": {"message": "当前 API Key 的额度已用完，请调整此 Key 的限额或联系管理员", "type": "quota_exceeded", "code": "key_quota_exceeded", "source": "gateway"}}
+
+
+def reserve_quota(db, key: ApiKey, estimate: float) -> bool:
+    """原子预占额度（审计 H4）：并发请求不能共同越过硬上限。
+
+    原 check_quota 是「请求前读取、完成后累加」，两个并发请求都读到旧值
+    就能双双入场。这里改用单条条件 UPDATE 完成「检查+预占」，在 SQLite 与
+    MySQL 上都是原子的：estimate 超出剩余额度的请求 rowcount==0，直接拒绝。
+    预占在请求收尾统一释放（_release_quota），最终 credit_used 仍等于真实积分。
+    """
+    if key.unlimited or estimate <= 0:
+        return True
+    est = int(estimate) if estimate >= 1 else estimate
+    n = db.query(ApiKey).filter(
+        ApiKey.id == key.id,
+        or_(ApiKey.unlimited == 1,
+            func.coalesce(ApiKey.credit_used, 0) + est <= ApiKey.credit_limit),
+    ).update({ApiKey.credit_used: func.coalesce(ApiKey.credit_used, 0) + est},
+             synchronize_session=False)
+    db.commit()
+    return n > 0
 
 
 class GatewayRejected(Exception):
