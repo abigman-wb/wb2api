@@ -396,7 +396,7 @@ def _fetch_real_credits(log_id: int, account_id: int, auth_json: str, model: str
     """
     try:
         time.sleep(60)
-        sess = AccountSession(auth_json)
+        sess = backend.AccountSession(auth_json)
         try:
             start = (created_at - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
             end = (created_at + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
@@ -416,15 +416,49 @@ def _fetch_real_credits(log_id: int, account_id: int, auth_json: str, model: str
                     return datetime.strptime(item.get("requestTime", ""), "%Y-%m-%d %H:%M:%S")
                 except Exception:
                     return datetime.min
-            best = min(candidates, key=lambda r: abs((_ts(r) - created_at).total_seconds()))
-            real = float(best.get("credit") or 0)
-            _logger.info("真实积分匹配 log=%s model=%s real=%s est=%s requestTime=%s",
-                         log_id, model, real, estimated_credits, best.get("requestTime"))
             db = SessionLocal()
             try:
                 log = db.query(UsageLog).filter(UsageLog.id == log_id).with_for_update().first()
                 if log is None:
                     return
+                # 幂等：本条已经做过真实回写就不再动（重复触发/重启重放都不二次校正）。
+                try:
+                    diag = json.loads(log.diagnostic_json or "") if log.diagnostic_json else {}
+                except Exception:
+                    diag = {}
+                if not isinstance(diag, dict):
+                    diag = {}
+                if diag.get("real_credit"):
+                    _logger.info("真实积分回写已完成，跳过 log=%s", log_id)
+                    return
+                # 同账号同模型 ±5 分钟窗口内的并发请求都可能在等回写；一条上游记录只能
+                # 校正一条日志。把兄弟日志已认领的 requestTime 排除，避免把同一条真实
+                # 用量重复套到多条估算上。
+                claimed = set()
+                siblings = db.query(UsageLog).filter(
+                    UsageLog.id != log_id,
+                    UsageLog.account_id == account_id,
+                    UsageLog.model == model,
+                    UsageLog.created_at >= created_at - timedelta(minutes=5),
+                    UsageLog.created_at <= created_at + timedelta(minutes=5),
+                ).all()
+                for sib in siblings:
+                    try:
+                        sd = json.loads(sib.diagnostic_json or "") if sib.diagnostic_json else {}
+                    except Exception:
+                        continue
+                    if isinstance(sd, dict) and isinstance(sd.get("real_credit"), dict):
+                        rt = sd["real_credit"].get("requestTime")
+                        if rt:
+                            claimed.add(rt)
+                candidates = [r for r in candidates if r.get("requestTime") not in claimed]
+                if not candidates:
+                    _logger.info("真实积分记录均已被兄弟日志认领 log=%s model=%s", log_id, model)
+                    return
+                best = min(candidates, key=lambda r: abs((_ts(r) - created_at).total_seconds()))
+                real = float(best.get("credit") or 0)
+                _logger.info("真实积分匹配 log=%s model=%s real=%s est=%s requestTime=%s",
+                             log_id, model, real, estimated_credits, best.get("requestTime"))
                 delta = real - log.credits
                 if abs(delta) < 0.0001:
                     return
@@ -435,6 +469,12 @@ def _fetch_real_credits(log_id: int, account_id: int, auth_json: str, model: str
                 acc = db.query(Account).filter(Account.id == log.account_id).with_for_update().first()
                 if acc is not None:
                     acc.balance_remain = max(0, int(acc.balance_remain or 0) - int(delta))
+                diag["real_credit"] = {
+                    "requestTime": best.get("requestTime"), "real": real,
+                    "estimated": estimated_credits,
+                    "at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                log.diagnostic_json = json.dumps(diag, ensure_ascii=False)
                 db.commit()
                 _logger.info("真实积分回写完成 log=%s real=%s delta=%s", log_id, real, delta)
             finally:
