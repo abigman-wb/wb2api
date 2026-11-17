@@ -2599,6 +2599,27 @@ def _estimate_credits(sse_text: str, model: str) -> float:
     return 0.0
 
 
+def _cancelled_usage_estimate(partial_text: str) -> dict:
+    """客户端断开/请求被取消时的保守结算口径（审计 H3）。
+
+    上游 usage 只在最后一帧出现，断开时基本拿不到 → 回退用**已收到的部分
+    原文**按 4 字符/token 折算。SSE 封装开销会让这个值略偏高，这是故意的：
+    「收到正文就断开」不能成为绕过额度的手段。
+    """
+    u = _parse_usage(partial_text)
+    toks = u["total_tokens"] or u["completion_tokens"]
+    if not toks:
+        toks = max(1, len(partial_text) // 4)
+    if u["credits"] is not None:
+        credits = u["credits"]
+    else:
+        credits = float(toks) * settings.COST_PER_TOKEN / 1000.0
+    return {"credits": credits, "prompt_tokens": u["prompt_tokens"],
+            "completion_tokens": u["completion_tokens"] or toks,
+            "total_tokens": u["total_tokens"] or toks,
+            "cached_tokens": u["cached_tokens"]}
+
+
 # Claude Code 等 Anthropic 客户端发来的是 claude-* 模型名，上游不认。
 # 按 opus / sonnet / haiku 三个档次映射到本后台白名单里的模型，
 # 档次目标来自 .env（ADMIN_ANTHROPIC_MODEL_*），默认 auto。
@@ -3104,6 +3125,27 @@ async def chat_completions(
                 yield json.dumps(err_obj, ensure_ascii=False)
             else:
                 yield f"data: {json.dumps(err_obj, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            # 客户端断开/网关超时取消（审计 H3）：上游可能已按已生成内容扣
+            # 积分，但正常记账只发生在成功收尾 —— 不补记就是漏账，恶意客户端
+            # 可反复中途断开绕过有限额度。有界结算：只读已收到的部分原文、
+            # 本地落库，不等待上游任何响应；结算异常不阻断取消传播。
+            try:
+                est = _cancelled_usage_estimate("".join(collected))
+                latency_ms = int((time.perf_counter() - request_start) * 1000)
+                seq = _log_chat_row(None, latency_ms, final_model, mode, final_uid, 200,
+                                    est["total_tokens"], error_kind="client_disconnected")
+                await _blocking_call(_record_usage, key.id, final_acc_id, final_model, est["credits"], None,
+                              reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request),
+                              use_case="chat-completion", prompt_tokens=est["prompt_tokens"],
+                              completion_tokens=est["completion_tokens"], total_tokens=est["total_tokens"],
+                              cached_tokens=est["cached_tokens"], seq=seq, latency_ms=latency_ms,
+                              error_kind="client_disconnected")
+                _logger.warning("请求被取消，按部分内容保守结算 model=%s uid=%s toks=%s credits=%.4f",
+                                final_model, final_uid, est["total_tokens"], est["credits"])
+            except Exception:
+                _logger.exception("取消结算失败（不阻断取消传播）")
+            raise
         except GatewayRejected as exc:
             await _record_gateway_rejection(exc, key.id, request)
             text = json.dumps(exc.payload(), ensure_ascii=False)
@@ -3675,6 +3717,24 @@ async def responses_proxy(
             else:
                 msg = _exhaustion_message(err_kind, last_err_msg, retry_budget.used, len(order) if order else 0, last_err_status)
             yield f"data: {json.dumps({'type': 'error', 'error': {'message': msg, 'code': 503, **_failure_evidence(err_kind, last_err_msg, last_err_status)}}, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            # 客户端断开/网关超时取消（审计 H3）：有界保守结算，见 chat 同款注释。
+            try:
+                est = _cancelled_usage_estimate("\n".join(raw_lines))
+                latency_ms = int((time.perf_counter() - request_start) * 1000)
+                seq = _log_chat_row(None, latency_ms, final_model, "resp", final_uid, 200,
+                                    est["total_tokens"], error_kind="client_disconnected")
+                await _blocking_call(_record_usage, key.id, final_acc_id, final_model, est["credits"], None,
+                              reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request),
+                              use_case="responses", prompt_tokens=est["prompt_tokens"],
+                              completion_tokens=est["completion_tokens"], total_tokens=est["total_tokens"],
+                              cached_tokens=est["cached_tokens"], seq=seq, latency_ms=latency_ms,
+                              error_kind="client_disconnected")
+                _logger.warning("responses 请求被取消，按部分内容保守结算 model=%s uid=%s toks=%s credits=%.4f",
+                                final_model, final_uid, est["total_tokens"], est["credits"])
+            except Exception:
+                _logger.exception("取消结算失败（不阻断取消传播）")
+            raise
         except GatewayRejected as exc:
             await _record_gateway_rejection(exc, key.id, request)
             text = json.dumps({'type': 'error', **exc.payload()}, ensure_ascii=False)
@@ -4236,6 +4296,24 @@ async def anthropic_messages(
             error = {'type': 'error', 'error': {'message': msg, 'type': 'overloaded_error',
                                                **_failure_evidence(err_kind, last_err_msg, last_err_status)}}
             yield 'event: error\ndata: ' + json.dumps(error, ensure_ascii=False) + '\n\n'
+        except asyncio.CancelledError:
+            # 客户端断开/网关超时取消（审计 H3）：有界保守结算，见 chat 同款注释。
+            try:
+                est = _cancelled_usage_estimate("\n".join(raw_lines))
+                latency_ms = int((time.perf_counter() - request_start) * 1000)
+                seq = _log_chat_row(None, latency_ms, final_model, "anthropic", final_uid, 200,
+                                    est["total_tokens"], error_kind="client_disconnected")
+                await _blocking_call(_record_usage, key.id, final_acc_id, final_model, est["credits"], None,
+                              reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request),
+                              use_case="anthropic", prompt_tokens=est["prompt_tokens"],
+                              completion_tokens=est["completion_tokens"], total_tokens=est["total_tokens"],
+                              cached_tokens=est["cached_tokens"], seq=seq, latency_ms=latency_ms,
+                              error_kind="client_disconnected")
+                _logger.warning("anthropic 请求被取消，按部分内容保守结算 model=%s uid=%s toks=%s credits=%.4f",
+                                final_model, final_uid, est["total_tokens"], est["credits"])
+            except Exception:
+                _logger.exception("取消结算失败（不阻断取消传播）")
+            raise
         except GatewayRejected as exc:
             await _record_gateway_rejection(exc, key.id, request)
             text = json.dumps({'type': 'error', **exc.payload()}, ensure_ascii=False)
