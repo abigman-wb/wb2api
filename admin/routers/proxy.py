@@ -2903,8 +2903,9 @@ async def chat_completions(
                             # 「Stream ended without finish_reason」并**反复重试**。
                             # 原实现把它当成功（_note_success）、不惩罚账号，
                             # 于是每次重试都再选中同一个坏号 —— 正是「一直重试」的成因。
-                            truncated = (not aggregate and not stream_is_error
-                                         and _sse_is_truncated(text))
+                            # 聚合模式同样要判：上游断流时聚合分支会把半截内容
+                            # 当成功 JSON 返回，客户端根本无从察觉（审计 H1）。
+                            truncated = (not stream_is_error and _sse_is_truncated(text))
                             if truncated and can_retry:
                                 # 一个字节都没发出去 → 完整换号重试，用户无感
                                 kind = "upstream_internal"
@@ -3342,6 +3343,24 @@ async def responses_proxy(
                                 return JSONResponse(status_code=502,
                                                     content={"error": {"message": r.text[:500],
                                                                        "type": "upstream_error"}})
+                            # HTTP 200 但流被截断（无 finish_reason/[DONE]）：
+                            # 非流式响应完全在缓冲里，客户端还没收到任何字节，
+                            # 直接换号重试（审计 H1：原实现会把半截内容当成功返回）。
+                            if _sse_is_truncated(r.text):
+                                kind = "upstream_internal"
+                                await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, r.text[:500], model=m)
+                                await _blocking_call(_maybe_degrade, db2, acc_i)
+                                sess_i.close()
+                                POOL.release(held_uid)
+                                held_uid = ""
+                                last_err_kind = kind
+                                last_err_msg = "上游流被截断（无 finish_reason 与 [DONE]）"
+                                _logger.warning(
+                                    "上游流被截断（responses 非流式），换号重试 acc=%s model=%s body=%.160s",
+                                    acc_i.uid, m, r.text)
+                                await pool.rotate_backoff_async(min(rotate_idx, 1))
+                                rotate_idx += 1
+                                continue
                             converter = ResponsesStreamConverter(model=model_name)
                             for line in r.text.splitlines():
                                 if not line.strip():
@@ -3540,6 +3559,48 @@ async def responses_proxy(
                                 held_uid = ""
                                 await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, _raw_text[:65536], model=m,
                                                           reset_at=_error_reset_at(r.headers, _raw_text))
+                                return
+                            # 流被截断（有内容、无终止帧）：绝不能合成
+                            # response.completed 当成功（审计 H1）。
+                            truncated = _sse_is_truncated(_raw_text)
+                            if truncated and not delivered:
+                                # 尚未向客户端产出任何事件 → 整条缓冲换号重试。
+                                kind = "upstream_internal"
+                                await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, _raw_text[:500], model=m)
+                                await _blocking_call(_maybe_degrade, db2, acc_i)
+                                sess_i.close()
+                                POOL.release(held_uid)
+                                held_uid = ""
+                                last_err_kind = kind
+                                last_err_msg = "上游流被截断（无 finish_reason 与 [DONE]）"
+                                _logger.warning(
+                                    "上游流被截断且尚未提交（responses 流式），换号重试 acc=%s model=%s",
+                                    final_uid, m)
+                                raw_lines.clear()
+                                await pool.rotate_backoff_async(min(rotate_idx, 1))
+                                rotate_idx += 1
+                                continue
+                            if truncated:
+                                # 已发出事件：收不回来，如实记错误并给客户端
+                                # 一个显式 error 终止（绝不补 response.completed）。
+                                kind = "upstream_internal"
+                                latency_ms = int((time.perf_counter() - request_start) * 1000)
+                                seq = _log_chat_row(None, latency_ms, final_model, "resp", final_uid,
+                                                    200, None, error_kind=kind)
+                                await _blocking_call(_record_usage, key.id, final_acc_id, final_model, 0.0, None,
+                                              reasoning_effort=_reasoning_effort(payload), client_ip=_client_ip(request), use_case="responses",
+                                              seq=seq, latency_ms=latency_ms, error_kind=kind)
+                                sess_i.close()
+                                POOL.release(held_uid)
+                                held_uid = ""
+                                await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, _raw_text[:500], model=m)
+                                await _blocking_call(_maybe_degrade, db2, acc_i)
+                                _logger.warning(
+                                    "上游流被截断且已提交（responses 流式），补发 error 终止 acc=%s model=%s",
+                                    final_uid, m)
+                                yield 'event: error\ndata: ' + json.dumps({"type": "error", "error": {
+                                    "message": "上游流被截断，响应不完整", "type": "server_error",
+                                    "code": "upstream_stream_truncated"}}, ensure_ascii=False) + '\n\n'
                                 return
                             if pending_events:
                                 delivered = True
@@ -3829,6 +3890,23 @@ async def anthropic_messages(
                                 return JSONResponse(status_code=502,
                                                     content={"error": {"message": r.text[:500],
                                                                        "type": "upstream_error"}})
+                            # HTTP 200 但流被截断：非流式全在缓冲里，换号重试，
+                            # 绝不把半截内容 build_message() 当成功返回（审计 H1）。
+                            if _sse_is_truncated(r.text):
+                                kind = "upstream_internal"
+                                await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, r.text[:500], model=m)
+                                await _blocking_call(_maybe_degrade, db2, acc_i)
+                                sess_i.close()
+                                POOL.release(held_uid)
+                                held_uid = ""
+                                last_err_kind = kind
+                                last_err_msg = "上游流被截断（无 finish_reason 与 [DONE]）"
+                                _logger.warning(
+                                    "上游流被截断（anthropic 非流式），换号重试 acc=%s model=%s body=%.160s",
+                                    acc_i.uid, m, r.text)
+                                await pool.rotate_backoff_async(min(rotate_idx, 1))
+                                rotate_idx += 1
+                                continue
                             conv = AnthropicStreamConverter(model=model_name)
                             raw_lines: list[str] = []
                             for line in r.text.splitlines():
@@ -4043,6 +4121,46 @@ async def anthropic_messages(
                                 held_uid = ""
                                 await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, _raw_text[:65536], model=m,
                                                           reset_at=_error_reset_at(r.headers, _raw_text))
+                                return
+                            # 流被截断（有内容、无终止帧）：绝不能合成
+                            # message_stop / 正常 message 当成功（审计 H1）。
+                            truncated = _sse_is_truncated(_raw_text)
+                            if truncated and not delivered:
+                                # 尚未向客户端产出任何事件 → 整条缓冲换号重试。
+                                kind = "upstream_internal"
+                                await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, _raw_text[:500], model=m)
+                                await _blocking_call(_maybe_degrade, db2, acc_i)
+                                sess_i.close()
+                                POOL.release(held_uid)
+                                held_uid = ""
+                                last_err_kind = kind
+                                last_err_msg = "上游流被截断（无 finish_reason 与 [DONE]）"
+                                _logger.warning(
+                                    "上游流被截断且尚未提交（anthropic 流式），换号重试 acc=%s model=%s",
+                                    final_uid, m)
+                                raw_lines.clear()
+                                await pool.rotate_backoff_async(min(rotate_idx, 1))
+                                rotate_idx += 1
+                                continue
+                            if truncated:
+                                # 已发出事件：收不回来，如实记错误并给客户端
+                                # 一个显式 error 终止（绝不补 message_stop）。
+                                kind = "upstream_internal"
+                                latency_ms = int((time.perf_counter() - request_start) * 1000)
+                                seq = _log_chat_row(None, latency_ms, final_model, "anthropic",
+                                                    final_uid, 200, None, error_kind=kind)
+                                await _blocking_call(_record_usage, key.id, final_acc_id, final_model, 0.0, None,
+                                              reasoning_effort=_reasoning_effort(chat_body), client_ip=_client_ip(request), use_case="anthropic",
+                                              seq=seq, latency_ms=latency_ms, error_kind=kind)
+                                sess_i.close()
+                                POOL.release(held_uid)
+                                held_uid = ""
+                                await _blocking_call(_apply_account_policy, db2, acc_i, kind, 200, _raw_text[:500], model=m)
+                                await _blocking_call(_maybe_degrade, db2, acc_i)
+                                _logger.warning(
+                                    "上游流被截断且已提交（anthropic 流式），补发 error 终止 acc=%s model=%s",
+                                    final_uid, m)
+                                yield conv.error_event("上游流被截断，响应不完整", "api_error")
                                 return
                             if pending_events:
                                 delivered = True
