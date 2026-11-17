@@ -30,7 +30,7 @@ from admin.config import settings
 from admin.db import SessionLocal, get_db
 from admin.models import Account, AccountModelCooldown, ApiKey, ModelConfig, UsageLog
 from admin.routers.models import _is_model_allowed
-from admin.security import check_quota, get_key_row, GatewayRejected, check_key_current
+from admin.security import check_quota, get_key_row, GatewayRejected, check_key_current, reserve_quota, _QUOTA_EXCEEDED_DETAIL
 from admin.pool import POOL
 from upstream_compat import (
     normalize_tool_choice,
@@ -2620,6 +2620,54 @@ def _cancelled_usage_estimate(partial_text: str) -> dict:
             "cached_tokens": u["cached_tokens"]}
 
 
+def _release_quota(key_id: int, amount: float) -> None:
+    """请求收尾释放额度预占（审计 H4）。
+
+    幂等保护：地板为 0（CASE 表达式对 SQLite/MySQL 通用），即使因意外
+    被调用两次也只把 credit_used 拉回 0，不会变负数。
+    """
+    if amount <= 0:
+        return
+    db = SessionLocal()
+    try:
+        cur = func.coalesce(ApiKey.credit_used, 0)
+        db.query(ApiKey).filter(ApiKey.id == key_id).update(
+            {ApiKey.credit_used: case((cur - amount < 0, 0), else_=cur - amount)},
+            synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        _logger.exception("释放额度预占失败 key=%s amount=%s", key_id, amount)
+    finally:
+        db.close()
+
+
+# 完成额预占上限：max_tokens 可能被客户端填 32k+，按全量预占会把临近限额的
+# 合法请求误杀。封顶 8192 token —— 并发超扣的敞口被限制在「单笔 8192 token
+# 的积分」以内，同时不会对短请求造成明显虚占。
+_RESERVE_COMPLETION_TOKEN_CAP = 8192
+
+
+def _estimate_request_credits(db, model: str, payload: dict) -> float:
+    """入场预占的估算口径：与 _record_usage 同源（model_configs 倍率，每千 token）。"""
+    mc = db.query(ModelConfig).filter(ModelConfig.model_id == (model or ""),
+                                      ModelConfig.enabled == 1).first()
+    mult = mc.credit_multiplier if mc else 0
+    if not mult:
+        return 0.0
+    try:
+        prompt_chars = len(json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        prompt_chars = 512
+    prompt_toks = max(1, prompt_chars // 4)
+    completion_toks = payload.get("max_tokens") or payload.get("max_output_tokens") or 2048
+    try:
+        completion_toks = max(1, min(int(completion_toks), _RESERVE_COMPLETION_TOKEN_CAP))
+    except (TypeError, ValueError):
+        completion_toks = 2048
+    return (prompt_toks + completion_toks) * mult / 1000.0
+
+
 # Claude Code 等 Anthropic 客户端发来的是 claude-* 模型名，上游不认。
 # 按 opus / sonnet / haiku 三个档次映射到本后台白名单里的模型，
 # 档次目标来自 .env（ADMIN_ANTHROPIC_MODEL_*），默认 auto。
@@ -2708,6 +2756,17 @@ async def chat_completions(
         order = order[:8]  # 最多尝试 8 个，避免全局限流时反复重试
     else:
         order = [resolved_model]  # 具体模型：不静默切换，失败即报错
+
+    # 额度预占（审计 H4）：check_quota 是「请求前读、完成后加」，两个并发
+    # 请求能共同越过硬上限。这里用原子条件 UPDATE 预占本次请求的估算额度，
+    # 超限直接 402；预占在生成器 finally 里统一释放，最终 credit_used 仍等于
+    # 真实积分（预占只是入场期间对其它并发请求可见的临时占用）。
+    reserved_credits = await _blocking_call(_estimate_request_credits, db, resolved_model, payload)
+    if reserved_credits > 0 and not await _blocking_call(reserve_quota, db, key, reserved_credits):
+        request_metrics.mark_gateway_error(402, _QUOTA_EXCEEDED_DETAIL)
+        await _blocking_call(_record_usage, key.id, 0, "", 0.0, None,
+                             error_kind="key_quota_exceeded", use_case="gateway-admission")
+        return JSONResponse(status_code=402, content=_QUOTA_EXCEEDED_DETAIL)
 
     # 预算闸门预检：必须在写出任何响应体（尤其是 SSE 200）之前拒绝。
     # 否则客户端只能等到超时——既看不到错误，也不会触发模型 fallback，
@@ -3151,6 +3210,10 @@ async def chat_completions(
             text = json.dumps(exc.payload(), ensure_ascii=False)
             yield text if aggregate else f'data: {text}\n\n'
         finally:
+            # 额度预占释放（审计 H4）：无论成功/失败/取消都要归还，最终
+            # credit_used 仍等于真实积分。幂等：地板 0，重复调用不变负。
+            if reserved_credits:
+                await _blocking_call(_release_quota, key.id, reserved_credits)
             # 兜底释放租约：流被客户端中断（CancelledError）时也必须归还名额，
             # 否则那个账号的在途计数永远减不回去，最终被永久排除在选号之外。
             if held_uid:
@@ -3277,6 +3340,14 @@ async def responses_proxy(
     if requested in ("auto", ""):
         order = [resolved] + await _blocking_call(_candidate_models, db, {resolved}, allowed)
         order = order[:8]
+
+    # 额度预占（审计 H4）：原子条件 UPDATE，超限直接 402；收尾统一释放。
+    reserved_credits = await _blocking_call(_estimate_request_credits, db, resolved, payload)
+    if reserved_credits > 0 and not await _blocking_call(reserve_quota, db, key, reserved_credits):
+        request_metrics.mark_gateway_error(402, _QUOTA_EXCEEDED_DETAIL)
+        await _blocking_call(_record_usage, key.id, 0, "", 0.0, None,
+                             error_kind="key_quota_exceeded", use_case="gateway-admission")
+        return JSONResponse(status_code=402, content=_QUOTA_EXCEEDED_DETAIL)
 
     client_wants_stream = bool(payload.get("stream", True))
     model_name = payload.get("model", "auto")
@@ -3463,6 +3534,8 @@ async def responses_proxy(
             await _record_gateway_rejection(exc, key.id, request)
             return JSONResponse(status_code=exc.status_code, content=exc.payload())
         finally:
+            if reserved_credits:
+                await _blocking_call(_release_quota, key.id, reserved_credits)
             if held_uid:
                 POOL.release(held_uid)
             if sess_i is not None:
@@ -3740,6 +3813,9 @@ async def responses_proxy(
             text = json.dumps({'type': 'error', **exc.payload()}, ensure_ascii=False)
             yield f'event: error\ndata: {text}\n\n'
         finally:
+            # 额度预占释放（审计 H4）：无论成功/失败/取消都要归还。
+            if reserved_credits:
+                await _blocking_call(_release_quota, key.id, reserved_credits)
             # 兜底释放租约：客户端中断流时也必须归还名额，否则该账号的在途计数
             # 永远减不回去，最终被永久排除在选号之外。
             if held_uid:
@@ -3840,6 +3916,14 @@ async def anthropic_messages(
     order = [resolved]
     if requested in ("auto", ""):
         order = ([resolved] + await _blocking_call(_candidate_models, db, {resolved}, allowed))[:8]
+
+    # 额度预占（审计 H4）：原子条件 UPDATE，超限直接 402；收尾统一释放。
+    reserved_credits = await _blocking_call(_estimate_request_credits, db, resolved, chat_body)
+    if reserved_credits > 0 and not await _blocking_call(reserve_quota, db, key, reserved_credits):
+        request_metrics.mark_gateway_error(402, _QUOTA_EXCEEDED_DETAIL)
+        await _blocking_call(_record_usage, key.id, 0, "", 0.0, None,
+                             error_kind="key_quota_exceeded", use_case="gateway-admission")
+        return JSONResponse(status_code=402, content=_QUOTA_EXCEEDED_DETAIL)
 
     # 上游一律按流式拉取：Anthropic 的方向就是「消费 Chat SSE 再转事件流」。
     # 客户端若要非流式，我们在内部聚合完再一次性返回。
@@ -4030,6 +4114,8 @@ async def anthropic_messages(
             await _record_gateway_rejection(exc, key.id, request)
             return JSONResponse(status_code=exc.status_code, content={'type': 'error', **exc.payload()})
         finally:
+            if reserved_credits:
+                await _blocking_call(_release_quota, key.id, reserved_credits)
             if held_uid:
                 POOL.release(held_uid)
             if sess_i is not None:
@@ -4319,6 +4405,8 @@ async def anthropic_messages(
             text = json.dumps({'type': 'error', **exc.payload()}, ensure_ascii=False)
             yield f'event: error\ndata: {text}\n\n'
         finally:
+            if reserved_credits:
+                await _blocking_call(_release_quota, key.id, reserved_credits)
             if held_uid:
                 POOL.release(held_uid)
             if sess_i is not None:
